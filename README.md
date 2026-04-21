@@ -15,14 +15,17 @@ A Claude Code skill that diagnoses and optimizes memory files in custom auto-mem
 
 ## Who This Is For
 
-This skill is for developers using a **custom auto-memory system** with Claude Code, where:
-- `MEMORY.md` serves as a session-start index, injected into Claude at the beginning of every conversation
-- `memory/*.md` files store detailed memory entries referenced by the index
-- The context injection mechanism enforces a **200-line hard limit** on `MEMORY.md`
+Some Claude Code users build a **custom auto-memory system** — a setup where Claude reads a set of Markdown files at the start of every session to remember past context. If you've built something like this, here's how it typically works:
 
-**How to tell if this applies to you**: If `~/.claude/hooks/memory-line-check.sh` exists and your MEMORY.md triggers ≥180-line warnings, this skill is for you.
+- `MEMORY.md` is loaded at session start as an index of what Claude should remember
+- `memory/*.md` files hold the actual memory entries, referenced from the index
+- The loading mechanism has a **hard limit of 200 lines** on `MEMORY.md`
 
-If your Claude Code setup does not use this file-based auto-memory pattern, this skill does not apply.
+**The problem**: Once `MEMORY.md` exceeds 200 lines, everything past line 200 is silently dropped. You won't get an error — Claude just won't remember things it used to know. By the time you notice, the context is already gone.
+
+**How to tell if this applies to you**: If `~/.claude/hooks/memory-line-check.sh` exists in your setup and MEMORY.md is triggering ≥180-line warnings, this skill is for you.
+
+If you're using Claude Code's built-in memory features rather than a custom file-based system, this skill doesn't apply.
 
 ---
 
@@ -49,7 +52,7 @@ Before using this skill, ensure the following are in place:
 - **Claude Code** with skill execution enabled
 - **Git** — required for rollback in `--scan` mode; target files must be tracked and the working tree must be clean before running (`git status --porcelain` and `git ls-files` of target files should be verified)
 - **`memory-health-rules.md`** — present in your memory directory; defines R1–R5 rules governing which MEMORY.md entries are candidates for removal or compression
-- **`memory-backup.sh`** hook — configured and executable; acts as a hard stop gate in `--fix` mode (backup failure blocks execution)
+- **`memory-backup.sh`** hook (a script Claude Code runs automatically before file changes) — configured and executable; acts as a hard stop gate in `--fix` mode, meaning backup failure blocks the entire operation
 
 ### Initial Setup (run once)
 
@@ -93,19 +96,22 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 /memory-health --fix --json  → JSON dry-run output (exits after Propose stage)
 ```
 
+> **`--fix` and `--scan` both modify files.** A backup runs automatically before any changes are made. If something goes wrong, you can recover with `git checkout -- <file>`.
+> Neither flag does anything until you explicitly confirm — the default (`/memory-health` with no flags) is always a safe, read-only diagnosis.
+
 ---
 
 ## How It Works
 
 ### Optimizer (`--fix`): MEMORY.md Line Trimmer
 
-7-stage pipeline with hard stops:
+7-stage pipeline with hard stops (points where a failure blocks the next stage):
 
 1. **Diagnose** — measure current line and byte count
 2. **Analyze** — load R1–R5 rules from `memory-health-rules.md`; no ad-hoc judgment
-3. **Propose** — show candidate changes and projected line count (dry-run) — *`--json` flag exits here, outputting results as JSON with no further stages executed*
-4. **Approve** — explicit, unambiguous user confirmation required
-5. **Backup** — `memory-backup.sh` runs; failure = hard stop (execution blocked)
+3. **Propose** — show candidate changes and projected line count (dry-run, read-only preview) — *`--json` flag exits here, outputting results as JSON with no further stages executed*
+4. **Approve** — you'll need to confirm explicitly before anything changes
+5. **Backup** — `memory-backup.sh` runs automatically; if the backup fails, the whole operation stops here
 6. **Execute** — apply approved changes to MEMORY.md
 7. **Verify** — assert `wc -l ≤ 180`; log to `skill-audit.log`
 
@@ -113,22 +119,21 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 
 ### Scanner (`--scan`): memory/*.md Size Manager
 
-6-stage pipeline with 2-phase commit:
+6-stage pipeline with 2-phase commit (a write strategy that either applies all changes at once or rolls all of them back):
 
 1. **Scan** — find all `memory/*.md` (excluding MEMORY.md) exceeding 5,000 chars
 2. **Measure & Report** — list files with char counts and section headers
 3. **Propose** — suggest split points (Markdown section headers / logical boundaries); output: `{original}-part2.md`
-4. **Select & Approve** — user selects split point; explicit confirmation required
+4. **Select & Approve** — you choose the split point and confirm before anything changes
 5. **Backup + Execute (2-phase commit)**:
-   - Phase 1 (Prepare): write `.tmp` files + prepare MEMORY.md pointer patches
-   - Phase 2 (Commit): verify `len(part1) + len(part2) = len(original) ± 3 chars`, then rename + patch
-   - The ±3-char tolerance accounts for line-ending normalization (LF vs CRLF) and BOM handling
-   - Rollback branches: (a) rename fail → delete .tmp; (b) pointer patch fail → reverse mv + `git checkout` (requires git tracking); (c) len() mismatch → `git checkout` all changed files
+   - Phase 1 (Prepare): write temporary files and prepare pointer updates — nothing is committed yet
+   - Phase 2 (Commit): verify the split is lossless (±3 chars tolerance for line-ending differences), then apply everything at once
+   - If anything goes wrong, all changes are rolled back automatically via `git checkout`
 6. **Verify & Log** — re-measure output files; **audit log recorded only on commit success**; rollback exits with error log
 
 **Done when**: all processed files ≤ 5,000 chars + MEMORY.md pointers updated + commit succeeded + audit log entry recorded.
 
-> **Design note**: The Optimizer relies solely on `memory-backup.sh` for recovery (single-file changes). The Scanner requires Git for multi-file commit/rollback integrity. This asymmetry is intentional.
+> **Design note**: The Optimizer uses `memory-backup.sh` for recovery (single-file change). The Scanner uses Git for rollback integrity across multiple files. This difference is intentional.
 
 ---
 
@@ -139,7 +144,7 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 | Hook | `memory-line-check.sh` | Auto-watch + warn only | None |
 | Skill | `/memory-health` | Interactive manual execution + optimization | **File changes** |
 
-The hook warns. This skill acts.
+The hook tells you when something's off. This skill is what actually fixes it.
 
 ---
 
@@ -199,15 +204,13 @@ ${CLAUDE_MEMORY_DIR}/
 
 ## Approval Policy
 
-Approval must be **explicit and unambiguous** — the user's response must clearly signal intent to proceed with file modification, not just acknowledgment or positive sentiment.
+When `--fix` or `--scan` is used, you'll need to confirm before any files change. Saying something like "looks good" or "sure" will prompt a follow-up — the response needs to clearly indicate you want to proceed.
 
 | Mode | Approval required | Example of valid approval |
 |------|:-----------------:|---------------------------|
 | dry-run (default) | No | — |
 | `--fix` | **Yes** | "proceed", "yes, apply", "확정해주세요" |
 | `--scan` | **Yes** | "proceed", "yes, apply", "확정해주세요" |
-
-Responses expressing sentiment ("looks good", "sure") will trigger a re-confirmation prompt.
 
 ---
 
@@ -219,4 +222,4 @@ Responses expressing sentiment ("looks good", "sure") will trigger a re-confirma
 
 ---
 
-*Part of the [Claude Code Skills](https://github.com/aniboy2k-gif) collection.*
+*Part of the [Claude Code Skills](https://github.com/aniboy2k-gif/memory-health) collection.*

@@ -4,7 +4,7 @@
 > 영어로 사용하려면 → [`SKILL.en.md`](SKILL.en.md)
 > For English → [`SKILL.en.md`](SKILL.en.md)
 >
-> **언어 자동 감지**: 대화가 영어로 이루어지고 있다면, 이 스킬의 모든 출력을 영어로 제공한다.
+> **언어 자동 감지**: 기본 출력은 한국어다. 영어로 대화하면 자동으로 영어로 출력한다.
 > 대화 언어가 불분명하거나 한/영 혼재 시에는 한국어(기본값)로 출력한다.
 > **Language auto-detection**: If the conversation is in English, all output from this skill will be in English.
 > When the language is unclear or mixed, Korean (default) is used.

@@ -4,7 +4,7 @@
 > For Korean → [`SKILL.md`](SKILL.md)
 > 한국어로 사용하려면 → [`SKILL.md`](SKILL.md)
 >
-> **Language auto-detection**: If the conversation is in Korean, all output from this skill will be in Korean.
+> **Language auto-detection**: Default output is English. If the conversation is in Korean, output switches to Korean automatically.
 > When the language is unclear or mixed, Korean (default) is used.
 
 > ⚠️ **[SINGLE-SESSION ONLY]** Running multiple Claude tabs simultaneously can corrupt your files.
