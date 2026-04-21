@@ -3,6 +3,10 @@
 > [한국어](README.ko.md) | English
 > **Canonical source: README.md (English). README.ko.md is a translation and may lag behind.**
 
+> 🌐 **Skill files**: [`SKILL.md`](SKILL.md) (Korean, default) · [`SKILL.en.md`](SKILL.en.md) (English)
+> Claude Code detects your conversation language and uses the matching skill file automatically.
+> You can also reference the English skill file directly by pointing Claude to `SKILL.en.md`.
+
 > **Memory grows. Context limits. memory-health keeps Claude sharp.**
 
 A Claude Code skill that diagnoses and optimizes memory files in custom auto-memory setups — before silent truncation degrades your AI assistant's context.
