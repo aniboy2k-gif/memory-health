@@ -260,9 +260,9 @@ Phase 2 (Commit):
 보존 정책: 최대 2세대 (.old 파일 1개)
 ```
 
-CSR 등록 기준:
-- dry-run, 스캔만 실행: skill-audit.log만 기록 (CSR 불필요)
-- 파일 분리, 포인터 교체 등 구조 변경: skill-audit.log + CSR 등록 필수
+감사 로그 참조 범위:
+- 허용: 표준 셸 명령, Python 내장, 환경 변수(CLAUDE_MEMORY_DIR 등), 이 스킬에 동봉된 scripts/
+- 금지: 외부 시스템·개인 게시판·서드파티 트래커 등 이 레포지토리 외부 의존성
 
 ---
 

@@ -142,7 +142,7 @@ The hook warns. This skill acts.
 ## Audit Log
 
 ```
-Location: ~/.claude/projects/-Users-{username}/memory/skill-audit.log
+Location: ${CLAUDE_MEMORY_DIR}/skill-audit.log
 Format:   {ISO8601} | {Feature} | {Summary} | {Before} → {After}
 
 Example:
@@ -184,7 +184,7 @@ The log path is controlled by the `$CLAUDE_MEMORY_DIR` environment variable in `
 ├── memory-line-check.sh              # Watch hook: warns when MEMORY.md >= 180 lines
 └── memory-backup.sh                  # Backup hook: hard stop gate for --fix
 
-~/.claude/projects/-Users-{user}/memory/
+${CLAUDE_MEMORY_DIR}/
 ├── MEMORY.md                         # Session index (managed by Optimizer)
 ├── memory-health-rules.md            # R1-R5 optimization rules (required)
 ├── skill-audit.log                   # Execution history

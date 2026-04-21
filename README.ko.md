@@ -149,7 +149,7 @@ hook은 경고만 한다. 이 스킬이 실제로 행동한다.
 ## 감사 로그
 
 ```
-위치: ~/.claude/projects/-Users-{username}/memory/skill-audit.log
+위치: ${CLAUDE_MEMORY_DIR}/skill-audit.log
 형식: {ISO8601} | {기능} | {작업 요약} | {변경 전} → {변경 후}
 
 예시:
@@ -191,7 +191,7 @@ Rotate: 50KB 초과 시 `.old`로 자동 rotate. 최대 2세대 보존.
 ├── memory-line-check.sh              # 감시 훅: MEMORY.md >= 180줄 시 경고
 └── memory-backup.sh                  # 백업 훅: --fix의 Hard Stop 게이트
 
-~/.claude/projects/-Users-{user}/memory/
+${CLAUDE_MEMORY_DIR}/
 ├── MEMORY.md                         # 세션 인덱스 (최적화기가 관리)
 ├── memory-health-rules.md            # R1-R5 최적화 규칙 (필수)
 ├── skill-audit.log                   # 실행 이력
