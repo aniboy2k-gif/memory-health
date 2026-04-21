@@ -3,9 +3,9 @@
 # 인수: $1=기능(F3|F4) $2=작업요약 $3=변경전 $4=변경후
 # MEMORY_DIR 환경 변수로 경로 override 가능
 
-MEMORY_DIR="${MEMORY_DIR:-${HOME}/.claude/projects/-Users-anbaesig/memory}"
+MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR 환경변수가 설정되지 않았습니다'}"
 LOG_FILE="${MEMORY_DIR}/skill-audit.log"
-TIMESTAMP=$(date +"%Y-%m-%dT%H:%M:%S+09:00")
+TIMESTAMP=$(date +"%Y-%m-%dT%H:%M:%S%z")
 
 # rotate: 50KB 초과 시 (cp+truncate — mv 중단 시 유실 방지)
 if [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt 51200 ]; then

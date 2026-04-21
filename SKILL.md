@@ -1,14 +1,17 @@
 # /memory-health
 
+> ⚠️ **[SINGLE-SESSION ONLY]** 여러 Claude 탭을 동시에 열어두면 파일이 손상될 수 있다.
+> 반드시 단일 세션에서만 실행할 것. 락 메커니즘은 제공되지 않는다.
+
 메모리 파일 건강 상태를 진단하고 최적화하는 스킬.
-기능 3 (MEMORY.md 줄 수 최적화)과 기능 4 (memory/*.md 파일 크기 분리)를 제공한다.
+Optimizer (MEMORY.md 줄 수 최적화)와 Scanner (memory/*.md 파일 크기 분리)를 제공한다.
 
 ## 사용법
 
 ```
 /memory-health          → 진단만 (dry-run, 자동 승인 범위)
-/memory-health --fix    → 기능 3 실행: MEMORY.md 줄 수 최적화 (승인 게이트 1회)
-/memory-health --scan   → 기능 4 실행: memory/*.md 파일 크기 스캔 + 분리 (승인 게이트 1회)
+/memory-health --fix    → Optimizer 실행: MEMORY.md 줄 수 최적화 (승인 게이트 1회)
+/memory-health --scan   → Scanner 실행: memory/*.md 파일 크기 스캔 + 분리 (승인 게이트 1회)
 /memory-health --fix --json  → dry-run 결과를 JSON 형식으로 출력 (자동화·파이프라인용)
 ```
 
@@ -21,11 +24,29 @@
 /memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
 ```
 
+### --fix --json 모드
+
+3단계(dry-run 결과)까지 실행 후 JSON으로 출력하고 **즉시 종료**한다. 파일 변경 없음.
+
+출력 스키마:
+```json
+{
+  "status": "ok | needs_action",
+  "current_lines": 0,
+  "target_lines": 180,
+  "candidates": [
+    { "section": "<헤더>", "current_lines": 0, "savings": 0 }
+  ]
+}
+```
+
 ## 초기화 (최초 1회 실행)
+
+`CLAUDE_MEMORY_DIR` 환경변수가 설정되어 있어야 한다. 설정 방법은 `install.sh` 참조.
 
 스킬 최초 사용 전 아래를 실행하여 필요한 파일을 사전 생성한다:
 ```bash
-MEMORY_DIR="${HOME}/.claude/projects/-Users-anbaesig/memory"
+MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR 환경변수가 설정되지 않았습니다'}"
 touch "$MEMORY_DIR/violation-archive.md" && echo "✅ violation-archive.md"
 touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 ```
@@ -43,18 +64,19 @@ hook은 경고만 출력한다. 실제 수정은 이 스킬이 담당한다.
 
 ---
 
-## 기능 3: MEMORY.md 줄 수 최적화 (`--fix`)
+## Optimizer: MEMORY.md 줄 수 최적화 (`--fix`)
 
 ### 전제 조건
 - hook(memory-line-check.sh)이 ≥ 180줄 경고를 발생시킨 경우에 실행 권장
-- MEMORY.md는 기능 4(`--scan`) 스캔 대상에서 제외 (이 파일만 기능 3 적용)
+- MEMORY.md는 Scanner(`--scan`) 스캔 대상에서 제외 (이 파일만 Optimizer 적용)
 
 ### 실행 단계 (7단계)
 
 **1단계 — 진단**
 ```bash
-wc -l ~/.claude/projects/-Users-anbaesig/memory/MEMORY.md
-wc -c ~/.claude/projects/-Users-anbaesig/memory/MEMORY.md
+MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR 환경변수가 설정되지 않았습니다'}"
+wc -l "${MEMORY_DIR}/MEMORY.md"
+wc -c "${MEMORY_DIR}/MEMORY.md"
 ```
 현재 줄 수와 바이트 수를 출력한다.
 
@@ -73,6 +95,7 @@ grep -q "^# version: $RULES_VERSION_REQUIRED" "$RULES_FILE" \
 **3단계 — 제안 (dry-run)**
 - 후보별 예상 변경 내용 출력
 - 적용 후 예상 줄 수 출력
+- `--fix --json` 모드인 경우: 위 JSON 스키마로 출력 후 **즉시 종료** (4~7단계 건너뜀)
 - 사용자 확인 대기
 
 **4단계 — 승인**
@@ -84,8 +107,8 @@ grep -q "^# version: $RULES_VERSION_REQUIRED" "$RULES_FILE" \
 ~/.claude/hooks/memory-backup.sh
 BACKUP_EXIT=$?
 if [ $BACKUP_EXIT -ne 0 ]; then
-  echo "❌ 백업 실패 (exit $BACKUP_EXIT). 실행 중단."
-  echo "복구 확인: git log --oneline -5"
+  echo "❌ 백업 실패 (exit $BACKUP_EXIT). 실행 중단." >&2
+  echo "복구 확인: git log --oneline -5" >&2
   exit 1
 fi
 ```
@@ -93,13 +116,13 @@ fi
 
 **6단계 — 실행**
 승인된 변경 사항을 MEMORY.md에 적용한다.
-기능 4 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
+Scanner 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
 
 **7단계 — 검증 (의무)**
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
 if [ "$LINES" -gt 180 ]; then
-  echo "⚠ 검증 실패: 현재 ${LINES}줄 (목표 ≤ 180줄). 추가 최적화 필요."
+  echo "⚠ 검증 실패: 현재 ${LINES}줄 (목표 ≤ 180줄). 추가 최적화 필요." >&2
 else
   echo "✅ 검증 통과: ${LINES}줄 (목표 ≤ 180줄)"
   # 200줄 cap 대비 20줄 안전 마진 (hook 경고 임계값 180과 일치)
@@ -114,7 +137,7 @@ fi
 
 ---
 
-## 기능 4: MD 파일 크기 스캔 + 분리 (`--scan`)
+## Scanner: MD 파일 크기 스캔 + 분리 (`--scan`)
 
 ### 전제 조건
 - 스캔 대상: `memory/*.md` (MEMORY.md 제외)
@@ -126,13 +149,13 @@ fi
 **1단계 — 스캔**
 ```python
 import os, glob
-MEMORY_DIR = os.path.expanduser(
-    "~/.claude/projects/-Users-anbaesig/memory"
-)
+MEMORY_DIR = os.environ.get("CLAUDE_MEMORY_DIR")
+if not MEMORY_DIR:
+    raise EnvironmentError("CLAUDE_MEMORY_DIR 환경변수가 설정되지 않았습니다")
 results = []
 for f in glob.glob(f"{MEMORY_DIR}/*.md"):
     if os.path.basename(f) == "MEMORY.md":
-        continue  # 기능 3 전용 파일 — 제외
+        continue  # Optimizer 전용 파일 — 제외
     content = open(f, encoding="utf-8").read()
     char_count = len(content)
     if char_count > 5000:
@@ -184,14 +207,18 @@ Phase 2 (Commit):
 ```
 (a) rename 실패:
     .tmp 파일 전체 삭제, MEMORY.md 포인터 무변경 → 원상복구 완료
+    복구 확인: ls "${CLAUDE_MEMORY_DIR}"/*.tmp 2>/dev/null \
+              && echo "⚠ tmp 잔여 있음" || echo "✅ 정리 완료"
 
 (b) rename 성공 + 포인터 갱신 실패:
     역방향 mv (part2 → 원본 복원) + git checkout -- MEMORY.md
+    복구 확인: git diff --name-only
 
 (c) len() 검증 실패 (양쪽 성공 후):
-    git rollback (git checkout -- {변경된 모든 파일})
+    git checkout -- {변경된 모든 파일}
+    복구 확인: git status
 ```
-각 분기에서 오류 메시지 + 복구 경로를 출력한 뒤 exit 1.
+각 분기에서 오류 메시지를 stderr에 출력한 뒤 exit 1.
 
 **6단계 — 검증 + 로그**
 분리 후 각 파일 len() 재측정. commit 성공 시에만 로그 기록:
@@ -207,14 +234,28 @@ Phase 2 (Commit):
 
 ---
 
+## 실패 모드 테이블
+
+| 단계 | 실패 조건 | authoritative 상태 | 복구 명령 |
+|------|----------|-------------------|----------|
+| 5단계 백업 실패 (Optimizer) | `memory-backup.sh` exit ≠ 0 | 원본 MEMORY.md 유지 | `git log --oneline -5` |
+| 6단계 실행 중 오류 (Optimizer) | MEMORY.md 쓰기 실패 | backup 본이 기준 | `git checkout -- MEMORY.md` |
+| Phase1 .tmp 생성 실패 (Scanner) | write 오류 | 원본 유지 | `rm -f "${CLAUDE_MEMORY_DIR}"/*.tmp` |
+| Phase2 rename 실패 (Scanner) | `mv` exit ≠ 0 | .tmp 잔존 | `rm -f "${CLAUDE_MEMORY_DIR}"/*.tmp` |
+| Phase2 포인터 갱신 실패 (Scanner) | MEMORY.md write 오류 | part2 생성됨, MEMORY.md 구버전 | `git checkout -- MEMORY.md && rm {part2-file}` |
+| len() 검증 실패 (Scanner) | \|합산 − 원본\| > 3 | 파일 변경됨 | `git checkout -- {변경된 파일들}` |
+| audit log rotate 실패 | `cp` exit ≠ 0 | 로그 기록 중단 | `ls -lh "${CLAUDE_MEMORY_DIR}/skill-audit.log"` |
+
+---
+
 ## 감사 로그 명세
 
 ```
-위치: ~/.claude/projects/-Users-anbaesig/memory/skill-audit.log
+위치: ${CLAUDE_MEMORY_DIR}/skill-audit.log
 형식: {ISO8601} | {기능} | {작업 요약} | {변경 전} → {변경 후}
 예시:
-  2026-04-21T20:00:00+09:00 | F3 | MEMORY.md 최적화 | 195줄 → 142줄
-  2026-04-21T20:10:00+09:00 | F4 | project-fss.md 분리 | 25,190자 → 4,800자 + 4,200자
+  2026-04-21T20:00:00+0900 | F3 | MEMORY.md 최적화 | 195줄 → 142줄
+  2026-04-21T20:10:00+0900 | F4 | project-fss.md 분리 | 25,190자 → 4,800자 + 4,200자
 보존: 50KB 초과 시 skill-audit.log.old로 rotate (스킬이 자동 수행)
 보존 정책: 최대 2세대 (.old 파일 1개)
 ```
@@ -239,3 +280,4 @@ CSR 등록 기준:
 | dry-run (기본) | 불필요 | 자동 승인 범위 (파일 변경 없음) |
 | `--fix` | 1회 필요 | MEMORY.md 내용 변경 |
 | `--scan` | 1회 필요 | memory/*.md 내용 변경 |
+| `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |

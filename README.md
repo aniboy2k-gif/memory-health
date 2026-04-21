@@ -46,11 +46,21 @@ Before using this skill, ensure the following are in place:
 
 ### Initial Setup (run once)
 
+Run `install.sh` to auto-detect the correct memory directory and set `CLAUDE_MEMORY_DIR`:
+
 ```bash
-MEMORY_DIR="${HOME}/.claude/projects/-Users-$(whoami)/memory"
-touch "$MEMORY_DIR/violation-archive.md" && echo "created: violation-archive.md"
-touch "$MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.log"
+bash install.sh
 ```
+
+Or set manually, then create required files:
+
+```bash
+export CLAUDE_MEMORY_DIR="<your-memory-dir>"   # see install.sh for detection method
+touch "$CLAUDE_MEMORY_DIR/violation-archive.md" && echo "created: violation-archive.md"
+touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.log"
+```
+
+> **Why `install.sh` instead of `$(whoami)`?** Claude Code generates project paths from the working directory's absolute path, not just the username. A simple username substitution will break on non-standard setups. `install.sh` detects the actual path at runtime.
 
 > `violation-archive.md` stores rule-violation records written by the audit system. Explicit initialization prevents accidental creation in the wrong directory.
 
@@ -334,6 +344,17 @@ hook은 경고만 한다. 이 스킬이 실제로 행동한다.
 Rotate: 50KB 초과 시 `.old`로 자동 rotate. 최대 2세대 보존.
 
 로그 경로는 `memory-health-log.sh`의 `$MEMORY_DIR` 환경변수로 제어된다.
+
+---
+
+## Limitations
+
+| 제약 | 내용 |
+|------|------|
+| **Single-session only** | 락 메커니즘 없음 — 여러 Claude 탭을 동시에 열면 파일 손상 가능 |
+| **Local filesystem only** | 원격 동기화, 클라우드 스토리지 미지원 |
+| **AI instruction file** | `SKILL.md`는 Claude가 런타임에 해석하는 LLM 지시 파일. 독립 실행 가능한 프로그램이 아님 |
+| **Custom auto-memory only** | Claude Code 공식 기능이 아닌 특정 파일 기반 자동 메모리 패턴에서만 동작 |
 
 ---
 
