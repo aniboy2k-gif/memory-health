@@ -15,10 +15,13 @@ echo ""
 DETECTED_DIR=""
 
 # 방법 A: 실행 중인 Claude Code 프로세스에서 경로 감지
-if command -v lsof >/dev/null 2>&1; then
-  DETECTED_DIR=$(lsof -p "$(pgrep -f 'claude' | head -1)" 2>/dev/null \
-    | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
-    | head -1 || true)
+if command -v lsof >/dev/null 2>&1 && command -v pgrep >/dev/null 2>&1; then
+  CLAUDE_PID=$(pgrep -f 'claude' 2>/dev/null | head -1 || true)
+  if [ -n "$CLAUDE_PID" ]; then
+    DETECTED_DIR=$(lsof -p "$CLAUDE_PID" 2>/dev/null \
+      | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
+      | head -1 || true)
+  fi
 fi
 
 # 방법 B: ~/.claude/projects/ 내에서 MEMORY.md 탐색
@@ -45,6 +48,17 @@ if [ ! -d "$DETECTED_DIR" ]; then
   echo "Claude Code를 먼저 실행하여 메모리 디렉토리를 생성하세요." >&2
   exit 1
 fi
+
+# 경로 안전성 검증: HOME 하위인지 확인 (Path Traversal 방지)
+case "$DETECTED_DIR" in
+  "$HOME"/*)
+    ;;
+  *)
+    echo "❌ 보안 오류: 지정된 경로가 HOME 디렉토리 하위가 아닙니다." >&2
+    echo "   경로: $DETECTED_DIR" >&2
+    exit 1
+    ;;
+esac
 
 echo "감지된 메모리 디렉토리: $DETECTED_DIR"
 echo ""
@@ -97,6 +111,47 @@ if [ -f "$RULES_TEMPLATE" ]; then
     echo "✅ memory-health-rules.md (템플릿에서 복사)"
   fi
 fi
+
+# 6. hooks 설치
+echo ""
+echo "hooks 설치 중..."
+
+HOOKS_DIR="${HOME}/.claude/hooks"
+mkdir -p "$HOOKS_DIR"
+
+cp "${SKILL_DIR}/scripts/memory-backup.sh"    "${HOOKS_DIR}/memory-backup.sh"
+chmod +x "${HOOKS_DIR}/memory-backup.sh"
+echo "✅ memory-backup.sh → ${HOOKS_DIR}/"
+
+cp "${SKILL_DIR}/scripts/memory-line-check.sh" "${HOOKS_DIR}/memory-line-check.sh"
+chmod +x "${HOOKS_DIR}/memory-line-check.sh"
+echo "✅ memory-line-check.sh → ${HOOKS_DIR}/"
+
+# 7. settings.json 등록 안내 (자동 등록 대신 명확한 수동 안내)
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "⚙️  settings.json 등록 필요 (수동 1회)"
+echo ""
+echo "~/.claude/settings.json의 hooks 섹션에 아래를 추가하세요:"
+echo ""
+cat <<'EOF'
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-line-check.sh"
+          }
+        ]
+      }
+    ]
+  }
+EOF
+echo ""
+echo "등록 후 Claude Code를 재시작하면 세션 시작마다 MEMORY.md 줄 수가 자동으로 감시됩니다."
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 echo ""
 echo "=== 설치 완료 ==="

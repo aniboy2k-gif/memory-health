@@ -47,12 +47,20 @@ Content beyond line 200 of `MEMORY.md` is **silently not loaded** by the context
 
 ## Requirements
 
-Before using this skill, ensure the following are in place:
+**Platform**: macOS (requires `pgrep` and `lsof` for auto-detection). Linux is not officially supported — `install.sh` will fall back to manual path entry if these tools are absent.
+
+**Before running `bash install.sh`**, verify:
+
+- [ ] **Claude Code is currently running** — `install.sh` auto-detects the memory directory from the active Claude process. If Claude is not running, auto-detection is skipped and you'll be prompted to enter the path manually.
+- [ ] **Git is installed** — required for rollback in `--scan` mode
+- [ ] **You know your memory directory path** — typically `~/.claude/projects/<encoded-path>/memory/`
+
+After running `bash install.sh`, ensure the following are in place before using the skill:
 
 - **Claude Code** with skill execution enabled
 - **Git** — required for rollback in `--scan` mode; target files must be tracked and the working tree must be clean before running (`git status --porcelain` and `git ls-files` of target files should be verified)
-- **`memory-health-rules.md`** — present in your memory directory; defines R1–R5 rules governing which MEMORY.md entries are candidates for removal or compression
-- **`memory-backup.sh`** hook (a script Claude Code runs automatically before file changes) — configured and executable; acts as a hard stop gate in `--fix` mode, meaning backup failure blocks the entire operation
+- **`memory-health-rules.md`** — present in your memory directory; defines R1–R5 rules governing which MEMORY.md entries are candidates for removal or compression (`install.sh` copies this automatically)
+- **`memory-backup.sh`** hook — copied to `~/.claude/hooks/` and registered in `settings.json` (`install.sh` copies the file; `settings.json` registration requires one manual step — see installer output)
 
 ### Initial Setup (run once)
 
