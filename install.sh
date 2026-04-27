@@ -78,9 +78,11 @@ if [ -n "$SHELL_RC" ]; then
     echo "ℹ️  CLAUDE_MEMORY_DIR이 이미 ${SHELL_RC}에 설정되어 있습니다."
     grep "CLAUDE_MEMORY_DIR" "$SHELL_RC"
   else
-    echo "" >> "$SHELL_RC"
-    echo "# memory-health skill" >> "$SHELL_RC"
-    echo "export CLAUDE_MEMORY_DIR=\"${DETECTED_DIR}\"" >> "$SHELL_RC"
+    {
+      echo ""
+      echo "# memory-health skill"
+      echo "export CLAUDE_MEMORY_DIR=\"${DETECTED_DIR}\""
+    } >> "$SHELL_RC"
     echo "✅ CLAUDE_MEMORY_DIR을 ${SHELL_RC}에 추가했습니다."
   fi
 else
@@ -132,6 +134,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "⚙️  settings.json 등록 필요 (수동 1회)"
 echo ""
+# shellcheck disable=SC2088 # tilde is intentional in user-facing message
 echo "~/.claude/settings.json의 hooks 섹션에 아래를 추가하세요:"
 echo ""
 cat <<'EOF'
