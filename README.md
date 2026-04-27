@@ -1,5 +1,7 @@
 # memory-health
 
+[![ShellCheck](https://github.com/aniboy2k-gif/memory-health/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/aniboy2k-gif/memory-health/actions/workflows/shellcheck.yml)
+
 > [한국어](README.ko.md) | English
 > **Canonical source: README.md (English). README.ko.md is a translation and may lag behind.**
 

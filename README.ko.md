@@ -7,6 +7,8 @@
 
 # memory-health
 
+[![ShellCheck](https://github.com/aniboy2k-gif/memory-health/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/aniboy2k-gif/memory-health/actions/workflows/shellcheck.yml)
+
 > 한국어 | [English](README.md)
 > **정본: README.md (영문). 이 파일(README.ko.md)은 번역본으로 내용이 최신 버전과 다를 수 있습니다.**
 
