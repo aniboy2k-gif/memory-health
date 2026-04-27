@@ -50,7 +50,7 @@ echo "$SOURCE_FILES" | xargs cp -t "$BACKUP_DEST" 2>/dev/null || {
 
 # verify backup integrity (file count + byte size)
 DEST_COUNT=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
-DEST_BYTES=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" 2>/dev/null | xargs du -cb 2>/dev/null | tail -1 | awk '{print $1}')
+DEST_BYTES=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" -exec du -cb {} + 2>/dev/null | tail -1 | awk '{print $1}')
 
 if [ "$SOURCE_COUNT" != "$DEST_COUNT" ]; then
   echo "❌ Backup verification failed: source ${SOURCE_COUNT} files → backup ${DEST_COUNT} files (mismatch)" >&2
@@ -65,8 +65,10 @@ echo "✅ Backup complete: $BACKUP_DEST (${SOURCE_COUNT} files)"
 # Note: race conditions where the source changes after backup completes cannot be prevented here.
 
 # clean up old backups (keep the most recent 10)
+# shellcheck disable=SC2012 # ls is acceptable here; pattern-matched names only (memory-*)
 BACKUP_COUNT=$(ls -1d "${BACKUP_DIR}"/memory-* 2>/dev/null | wc -l)
 if [ "$BACKUP_COUNT" -gt 10 ]; then
+  # shellcheck disable=SC2012 # mtime sort via ls -dt; equivalent find recipe is significantly more complex
   ls -1dt "${BACKUP_DIR}"/memory-* | tail -n +11 | xargs rm -rf
   echo "ℹ️  Old backups cleaned up (keeping most recent 10)"
 fi
