@@ -24,9 +24,11 @@ Optimizer (MEMORY.md 줄 수 최적화)와 Scanner (memory/*.md 파일 크기 �
 ## 사용법
 
 ```
-/memory-health          → 진단만 (dry-run, 자동 승인 범위)
-/memory-health --fix    → Optimizer 실행: MEMORY.md 줄 수 최적화 (승인 게이트 1회)
-/memory-health --scan   → Scanner 실행: memory/*.md 파일 크기 스캔 + 분리 (승인 게이트 1회)
+/memory-health               → 진단만 (dry-run, 자동 승인 범위)
+/memory-health --fix         → Optimizer 실행: MEMORY.md 줄 수 최적화 (승인 게이트 1회)
+/memory-health --scan        → Scanner 실행: memory/*.md 파일 크기 스캔 + 분리 (승인 게이트 1회)
+/memory-health --rules       → Rules Checker: 자동 로드 rules 파일 크기 검사 (read-only, 승인 불필요)
+/memory-health --rules --strict → Rules Checker: WARN 이상 발생 시 exit 2 (CI/CD 파이프라인용)
 /memory-health --fix --json  → dry-run 결과를 JSON 형식으로 출력 (자동화·파이프라인용)
 ```
 
@@ -35,8 +37,10 @@ Optimizer (MEMORY.md 줄 수 최적화)와 Scanner (memory/*.md 파일 크기 �
 실행 흐름:
 ```
 /memory-health         → dry-run 결과 출력 (게이트 없음)
+                         ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
 /memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행
 /memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
+/memory-health --rules → Rules Checker 실행 (파일 변경 없음, 게이트 없음)
 ```
 
 ### --fix --json 모드
@@ -288,6 +292,98 @@ Phase 2 (Commit):
 
 ---
 
+---
+
+## Rules Checker: 자동 로드 파일 크기 검사 (`--rules`)
+
+### 전제 조건
+- `CLAUDE_RULES_DIR` 환경변수가 절대 경로로 설정되어 있어야 한다 (미설정 시 exit 1)
+- `install.sh` 실행 후 `~/.claude/da-tools/env.sh`를 source하면 자동 설정
+- 스캔 대상: `CLAUDE_RULES_DIR` 직접 자식 `.md` 파일만 (서브디렉토리 무시)
+- 파일 수정 없음 (read-only) → 승인 게이트 없음
+
+### 기능 범위 고지
+이 기능은 **지정 디렉토리의 MD 파일 크기를 검사**한다.
+실제 Claude Code가 해당 파일을 로드하는지 여부는 보장하지 않는다.
+
+### 임계값 체계
+| 등급 | 임계값 | 의미 |
+|------|--------|------|
+| OK | < 20,000자 | 정상 |
+| WARN | 20,000 ~ 40,000자 | 조기 경고 (CRITICAL 50% 도달 시점) |
+| CRITICAL | > 40,000자 | Claude Code 성능 경고 발생 중 |
+
+임계값 오버라이드: `CLAUDE_RULES_SIZE_WARN`, `CLAUDE_RULES_SIZE_CRITICAL` 환경변수
+
+### 심볼릭 링크 정책
+- symlink target을 한 번만 follow (최대 깊이 20)
+- realpath() 해시셋으로 중복 제거 + 순환 감지 (결정적, 순서 무관)
+- 순환 감지 시: WARN 출력 + 해당 항목 skip (exit 0)
+- 깊이 초과 시: WARN 출력 + skip (exit 0)
+
+### 실행 단계 (4단계)
+
+**1단계 — 환경 확인**
+```bash
+CLAUDE_RULES_DIR 설정 여부 확인 → 미설정 시 exit 1 (설정 오류)
+CLAUDE_RULES_DIR 디렉토리 존재 확인 → 없으면 exit 1 (설정 오류)
+```
+
+**2단계 — 스캔 (5초 wall-clock budget)**
+`scripts/check-rules.sh`를 실행한다:
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-rules.sh [--strict]
+```
+타임아웃 초과 시: 완료된 파일까지 출력 + 미처리 파일 목록 (최대 10개) + exit 0
+
+**3단계 — 결과 출력**
+```
+=== Rules Checker ===
+대상: /path/to/rules
+주의: 지정 디렉토리 MD 파일 크기 검사 — 실제 Claude Code 로딩 여부 보장 안함
+      서브디렉토리 무시 | 심볼릭 링크: follow once (최대 깊이 20)
+
+🔴 CRITICAL    53,400자  ai-role-assignment-core.md
+🟡 WARN        25,000자  some-large-rule.md
+✅ OK           4,000자  small-rule.md
+
+📊 CRITICAL 1건 — Claude Code 성능 경고 발생 중 (> 40,000자)
+   개선 방향:
+   1. 파일 L3(핵심 요약 자동 로드) + L4(상세 온디맨드) 구조로 분리
+   2. CLAUDE.md 자동 로드에서 제외 후 온디맨드 참조로 전환
+```
+
+**4단계 — audit 로그 (F5)**
+```bash
+memory-health-log.sh "F5" "rules-scan (read-only)" "CRITICAL=N" "WARN=M"
+```
+
+### Graceful 실패 정책
+
+| 실패 유형 | 출력 레벨 | exit code |
+|----------|----------|-----------|
+| CLAUDE_RULES_DIR 미설정 | WARN + skip | **1** |
+| 디렉토리 없음 | WARN + skip | **1** |
+| 특정 파일 파싱 실패 | ℹ️ skip + 계속 | 0 |
+| symlink 순환 감지 | ⚠ WARN + skip | 0 |
+| symlink 깊이 초과 | ⚠ WARN + skip | 0 |
+| 타임아웃 (기본) | partial result ⚠ + 미처리 목록 | 0 |
+| 타임아웃 (--strict) | partial result ⚠ + 미처리 목록 | **2** |
+| WARN 이상 (--strict) | 해당 출력 | **2** |
+| CRITICAL 파일 존재 | CRITICAL 출력 | 0 (read-only) |
+
+### `--strict` 모드
+CI/CD 파이프라인용. WARN 이상 비정상 상황 발생 시 exit 2.
+```bash
+bash check-rules.sh --strict
+```
+
+### 완료 기준
+- 스캔 결과 출력 완료
+- skill-audit.log에 F5 이력 기록
+
+---
+
 ## 승인 정책 요약
 
 | 모드 | 승인 필요 | 근거 |
@@ -295,4 +391,5 @@ Phase 2 (Commit):
 | dry-run (기본) | 불필요 | 자동 승인 범위 (파일 변경 없음) |
 | `--fix` | 1회 필요 | MEMORY.md 내용 변경 |
 | `--scan` | 1회 필요 | memory/*.md 내용 변경 |
+| `--rules` | 불필요 | read-only, 파일 변경 없음 |
 | `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |

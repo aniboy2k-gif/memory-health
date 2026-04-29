@@ -63,8 +63,53 @@
 
 ---
 
+---
+
+## check-rules.sh
+
+| 항목 | 명세 |
+|------|------|
+| **위치** | `~/.claude/skills/memory-health/scripts/check-rules.sh` |
+| **실행 조건** | `CLAUDE_RULES_DIR` 환경변수가 절대 경로로 설정된 상태에서 호출 |
+| **입력** | `[--strict]` 플래그 (선택) |
+| **기능** | 지정 디렉토리 직접 자식 `.md` 파일 크기 검사 (read-only) |
+| **exit 0** | 정상 또는 CRITICAL 파일 존재 (read-only이므로) |
+| **exit 1** | 설정 오류: CLAUDE_RULES_DIR 미설정 또는 디렉토리 없음 |
+| **exit 2** | --strict 모드에서 WARN 이상 비정상 상황 발생 |
+| **요구 사항** | `chmod +x` 실행 권한, Python 3 필요 |
+
+### 환경변수 계약
+
+| 환경변수 | 필수 | 기본값 | 설명 |
+|---------|:----:|--------|------|
+| `CLAUDE_RULES_DIR` | **필수** | 없음 | rules 디렉토리 절대 경로. 미설정 시 exit 1 |
+| `CLAUDE_RULES_SIZE_WARN` | 선택 | 20000 | WARN 임계값 (문자 수) |
+| `CLAUDE_RULES_SIZE_CRITICAL` | 선택 | 40000 | CRITICAL 임계값 (문자 수). Claude Code 성능 경고 기준과 일치 |
+| `MEMORY_HEALTH_DEFAULT_RULES` | 선택 | false | `true` 설정 시 기본 dry-run에 Rules Checker 자동 포함 |
+| `CLAUDE_MEMORY_DIR` | 선택 | 없음 | audit 로그(skill-audit.log) 기록 위치 |
+
+### CLAUDE_RULES_DIR 설정 방법
+```bash
+# install.sh 실행 후 생성된 env.sh를 source
+source ~/.claude/da-tools/env.sh
+
+# 또는 직접 설정
+export CLAUDE_RULES_DIR="/Volumes/L'Atelier de Claude/workspace/claude-forge/rules"
+```
+
+### F5 감사 로그 코드
+
+| 코드 | 기능 | 동작 유형 | 형식 |
+|------|------|----------|------|
+| F3 | MEMORY.md 최적화 | write | `F3 \| MEMORY.md 최적화 \| {before}줄 → {after}줄` |
+| F4 | memory/*.md 파일 분리 | write | `F4 \| {file} 분리 \| {before}자 → {after1}자 + {after2}자` |
+| **F5** | **rules-scan** | **read-only** | `F5 \| rules-scan (read-only) \| CRITICAL=N → WARN=M` |
+
+---
+
 ## 버전 호환성
 
 | 스킬 버전 | rules 최소 버전 | 비고 |
 |-----------|---------------|------|
 | 1.x       | 1.0.0         | 현재 버전 |
+| 1.1.x+    | 1.0.0         | Rules Checker (--rules) 추가 |

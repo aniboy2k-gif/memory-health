@@ -105,6 +105,59 @@ copy_rules_template() {
   return 0
 }
 
+# print_rules_dir_template: CLAUDE_RULES_DIR 환경변수 샘플 출력
+# env.sh에 선택적으로 저장. shell profile 직접 수정 없음.
+# returns: 0 (always)
+print_rules_dir_template() {
+  local env_file="${HOME}/.claude/da-tools/env.sh"
+  local rules_dir_sample=""
+
+  # 샘플 경로 추정 (실제 경로 입력 유도)
+  if [ -d "/Volumes" ]; then
+    rules_dir_sample="/Volumes/L'Atelier de Claude/workspace/claude-forge/rules"
+  else
+    rules_dir_sample="${HOME}/workspace/claude-forge/rules"
+  fi
+
+  echo ""
+  echo "=== Rules Checker 설정 (선택 사항) ==="
+  echo ""
+  echo "자동 로드 rules 파일 크기 검사(/memory-health --rules)를 사용하려면"
+  echo "CLAUDE_RULES_DIR을 설정해야 합니다."
+  echo ""
+  echo "아래 환경변수를 ~/.zshrc 또는 ~/.bashrc에 직접 추가하거나,"
+  echo "${env_file}에 저장하세요 (shell profile 직접 수정 없음):"
+  echo ""
+  echo "  # Rules Checker 설정"
+  echo "  export CLAUDE_RULES_DIR=\"${rules_dir_sample}\""
+  echo "  export CLAUDE_RULES_SIZE_WARN=20000       # 선택: WARN 임계값 (기본 20000자)"
+  echo "  export CLAUDE_RULES_SIZE_CRITICAL=40000   # 선택: CRITICAL 임계값 (기본 40000자)"
+  echo "  export MEMORY_HEALTH_DEFAULT_RULES=false  # 선택: true 시 기본 dry-run에 자동 포함"
+  echo ""
+
+  echo -n "위 내용을 ${env_file}에 저장하시겠습니까? (y/N): "
+  local ans
+  read -r ans 2>/dev/null || ans="N"
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    mkdir -p "$(dirname "$env_file")"
+    {
+      echo ""
+      echo "# memory-health Rules Checker ($(date +%Y-%m-%d))"
+      echo "export CLAUDE_RULES_DIR=\"${rules_dir_sample}\""
+      echo "# export CLAUDE_RULES_SIZE_WARN=20000"
+      echo "# export CLAUDE_RULES_SIZE_CRITICAL=40000"
+      echo "# export MEMORY_HEALTH_DEFAULT_RULES=false"
+    } >> "$env_file"
+    echo "✅ ${env_file}에 저장했습니다."
+    echo "   실행: source ${env_file}"
+    echo "   CLAUDE_RULES_DIR 경로를 실제 경로로 수정하세요."
+  else
+    echo "ℹ️  저장 생략. 위 내용을 직접 shell 설정 파일에 추가하세요."
+  fi
+
+  return 0
+}
+
 # main: 전체 설치 흐름 (직접 실행 시에만 호출됨 — BASH_SOURCE 가드)
 main() {
   echo "=== memory-health install.sh ==="
@@ -142,7 +195,10 @@ main() {
   skill_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   copy_rules_template "$memory_dir" "$skill_dir"
 
-  # 6. 완료 안내
+  # 6. Rules Checker 설정 안내 (env.sh 선택 저장)
+  print_rules_dir_template
+
+  # 7. 완료 안내
   echo ""
   echo "=== 설치 완료 ==="
   local shell_rc=""
@@ -154,6 +210,7 @@ main() {
   echo ""
   echo "설치 확인:"
   echo "  echo \$CLAUDE_MEMORY_DIR"
+  echo "  echo \$CLAUDE_RULES_DIR"
 }
 
 # 직접 실행 시에만 main 호출 (source 시 함수 정의만 — bats 테스트 격리)
