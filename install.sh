@@ -13,9 +13,13 @@ detect_memory_dir() {
 
   # 방법 A: 실행 중인 Claude Code 프로세스에서 경로 감지
   if command -v lsof >/dev/null 2>&1; then
-    detected=$(lsof -p "$(pgrep -f 'claude' | head -1)" 2>/dev/null \
-      | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
-      | head -1 || true)
+    local _pid
+    _pid=$(pgrep -f 'claude' | head -1)
+    if [ -n "$_pid" ]; then
+      detected=$(lsof -p "$_pid" 2>/dev/null \
+        | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
+        | head -1 || true)
+    fi
   fi
 
   # 방법 B: ~/.claude/projects/ 내에서 MEMORY.md 탐색
@@ -29,7 +33,7 @@ detect_memory_dir() {
     echo "자동 감지 실패. 메모리 디렉토리 경로를 입력하세요." >&2
     echo "예: ${HOME}/.claude/projects/-Users-$(whoami)/memory" >&2
     echo -n "경로: " >&2
-    read -r detected
+    read -r -t 60 detected 2>/dev/null || detected=""
   fi
 
   if [ -z "$detected" ]; then
