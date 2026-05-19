@@ -346,6 +346,19 @@ Phase 2 (Commit):
 | Phase2 포인터 갱신 실패 (Scanner) | MEMORY.md write 오류 | part2 생성됨, MEMORY.md 구버전 | `git checkout -- MEMORY.md && rm {part2-file}` |
 | len() 검증 실패 (Scanner) | \|합산 − 원본\| > 3 | 파일 변경됨 | `git checkout -- {변경된 파일들}` |
 | audit log rotate 실패 | `cp` exit ≠ 0 | 로그 기록 중단 | `ls -lh "${CLAUDE_MEMORY_DIR}/skill-audit.log"` |
+| **WAL init 실패 (Atomicity)** | `memory-wal.sh init` exit ≠ 0 | 변경 시작 전, 원본 유지 | `memory-wal.sh list` |
+| **WAL 미commit 발견 (Atomicity)** | 변경 후 process 중단 → WAL 잔존 | 변경 도중 — 파일 무결성 의문 | `memory-wal.sh recover` → `rollback` → `memory-backup.sh` 복구 |
+| **Journal chain break (Atomicity)** | `memory-journal.sh verify` exit ≠ 0 | 로그 변조 또는 손상 — 신뢰성 의문 | `memory-journal.sh tail 20` 확인 후 외부 백업과 대조 |
+| **Sidecar fingerprint 불일치 (R6)** | sha256 비교 실패 | 사용자 직접 편집 후 도구 재실행 | 정상 — 변경 진행 + sidecar 갱신 |
+
+> **Atomicity 동작 흐름 (Phase C — CSR #658, 2026-05-19)**:
+> 1. `wal_id=$(memory-wal.sh init "$files" "$rules")` — prepare phase
+> 2. `memory-backup.sh` — 변경 직전 backup 보장 (기존 동작)
+> 3. R1~R6 적용 — 실제 파일 변경
+> 4. `memory-journal.sh log <action> "$files" "$rules" "$wal_id" '{...}'` — append-only audit
+> 5. `memory-wal.sh commit "$wal_id"` — atomic 완료 신호 (WAL 삭제)
+>
+> 중단 시: WAL 잔존 → 다음 실행 시 `memory-wal.sh recover` 가 자동 감지 → 사용자 확인 후 `rollback` + `git checkout` 또는 backup 복구.
 
 ---
 

@@ -16,7 +16,24 @@ set -euo pipefail
 MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR is not set'}"
 BACKUP_DIR="${MEMORY_DIR}/.backups"
 TIMESTAMP=$(date +"%Y%m%dT%H%M%S")
-BACKUP_DEST="${BACKUP_DIR}/memory-${TIMESTAMP}"
+
+# Optional WAL ID for atomicity tracking (Phase C — CSR #658).
+# Backwards compatible: positional arg or --wal-id flag.
+WAL_ID=""
+case "${1:-}" in
+  --wal-id)
+    WAL_ID="${2:-}"
+    ;;
+  --wal-id=*)
+    WAL_ID="${1#--wal-id=}"
+    ;;
+esac
+
+if [ -n "$WAL_ID" ]; then
+  BACKUP_DEST="${BACKUP_DIR}/memory-${TIMESTAMP}-wal-${WAL_ID}"
+else
+  BACKUP_DEST="${BACKUP_DIR}/memory-${TIMESTAMP}"
+fi
 
 # pre-flight: check write permission and available disk space
 if [ ! -w "$(dirname "$BACKUP_DIR")" ] && [ ! -w "$BACKUP_DIR" ] 2>/dev/null; then
