@@ -1,0 +1,44 @@
+name: Test (bats)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bats
+        run: |
+          if ! command -v bats >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends bats
+          fi
+          bats --version
+
+      - name: Install shellcheck (for bats internal checks)
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            sudo apt-get install -y --no-install-recommends shellcheck
+          fi
+          shellcheck --version
+
+      - name: Ensure python3 is available
+        run: python3 --version
+
+      - name: Run bats — install + scripts (기존 인프라)
+        run: |
+          bats tests/install.bats
+          bats tests/scripts.bats
+
+      - name: Run bats — Phase E TDD suite (R1~R6 + Red-Green)
+        run: |
+          bats tests/test-r1-r6.bats
+          bats tests/r6-sidecar-idempotency.bats
+          bats tests/red-green-tdd.bats
