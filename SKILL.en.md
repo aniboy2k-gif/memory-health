@@ -26,6 +26,7 @@ Provides an Optimizer (trims MEMORY.md line count) and a Scanner (splits oversiz
 /memory-health --fix    → Run Optimizer: trim MEMORY.md line count (one approval gate)
 /memory-health --scan   → Run Scanner: scan and split memory/*.md files (one approval gate)
 /memory-health --fix --json  → Output dry-run results as JSON (for automation/pipelines)
+/memory-health --with-md     → memory health + CLAUDE.md quality audit (requires claude-md-management plugin)
 ```
 
 The default is dry-run — no files are changed.
@@ -35,6 +36,7 @@ Execution flow:
 /memory-health         → show dry-run results (no gate)
 /memory-health --fix   → show dry-run results → approval gate → execute
 /memory-health --scan  → show scan results    → approval gate → execute
+/memory-health --with-md → Phase A(memory health dry-run) → Phase B(CLAUDE.md quality audit) → Phase C(session learnings prompt)
 ```
 
 ### --fix --json mode
@@ -285,6 +287,58 @@ No ad-hoc judgment — never select candidates using criteria not in the rules f
 
 ---
 
+## CLAUDE.md Integration (`--with-md`)
+
+> **Prerequisite**: `claude-md-management` plugin must be installed.
+> Install: `claude plugin install claude-md-management`
+> Verify: `claude plugin list`
+
+`--with-md` can be combined with other flags: `/memory-health --with-md`, `/memory-health --fix --with-md`.
+
+### Execution flow (3 Phases)
+
+**Phase A — memory health (existing behavior)**
+- Runs the existing dry-run / `--fix` / `--scan` / `--rules` logic unchanged
+- Proceeds to Phase B after Phase A completes
+
+**Phase B — CLAUDE.md quality audit (invokes `claude-md-improver` skill)**
+
+Audits CLAUDE.md files in the current working directory:
+
+```bash
+find . -name "CLAUDE.md" -o -name ".claude.local.md" 2>/dev/null | head -10
+```
+
+If files exist, runs `claude-md-improver` Phases 1–3 (Discovery → Quality Assessment → Quality Report).
+- Outputs quality scores (A–F grade)
+- Lists issues and recommended additions
+- **No files are modified in this phase** (report only)
+
+If no files found:
+```
+ℹ️  No CLAUDE.md found — no CLAUDE.md in the current directory.
+   Run from the project root or create a CLAUDE.md first.
+```
+
+**Phase C — Session learnings prompt**
+
+After Phase B, outputs:
+```
+💡 Capture session learnings
+   To incorporate discoveries from this session into CLAUDE.md:
+   /revise-claude-md
+   (available with claude-md-management plugin installed)
+```
+
+For `--fix --with-md`: Phase A `--fix` completes, then Phase B → C follows.
+
+### --with-md completion criteria
+- Phase A: same as the respective mode's completion criteria
+- Phase B: CLAUDE.md quality report output complete (no file changes)
+- Phase C: session learnings prompt output complete
+
+---
+
 ## Approval policy summary
 
 | Mode | Approval required | Reason |
@@ -293,3 +347,5 @@ No ad-hoc judgment — never select candidates using criteria not in the rules f
 | `--fix` | Once | MEMORY.md content changes |
 | `--scan` | Once | memory/*.md content changes |
 | `--fix --json` | No | Same as dry-run, exits after JSON output |
+| `--with-md` (Phase B) | No | claude-md-improver report only (no file changes) |
+| `--with-md` Phase B→edit | Once | Separate approval if claude-md-improver applies edits |

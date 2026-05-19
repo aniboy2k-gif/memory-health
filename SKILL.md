@@ -19,28 +19,57 @@
 -->
 
 메모리 파일 건강 상태를 진단하고 최적화하는 스킬.
-Optimizer (MEMORY.md 줄 수 최적화)와 Scanner (memory/*.md 파일 크기 분리)를 제공한다.
+Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분리),
+**CLAUDE.md 주기적 감사** (claude-md-management 연동, 30일 주기 자동 실행)를 제공한다.
+
+> **연동 훅**: 작업 단계 완료 시 `revise-claude-md-stop.sh`(Stop) + `revise-claude-md-inject.sh`(UserPromptSubmit)이
+> `/revise-claude-md`를 자동 주입한다. — 별도 설치 불필요 (settings.json 등록 완료)
 
 ## 사용법
 
+### v2 명령 구조 (Spec — CSR #656 DA Tier 1 C-7 정합, 2026-05-19)
+
+> **상태**: spec 박제 완료. 구현은 후속 PR (인계 md `~/.claude/da-archive/memory-health-redesign-handoff-2026-05-19.md` 참조). v1 명령은 backward 호환으로 계속 동작.
+
 ```
-/memory-health               → 진단만 (dry-run, 자동 승인 범위)
-/memory-health --fix         → Optimizer 실행: MEMORY.md 줄 수 최적화 (승인 게이트 1회)
-/memory-health --scan        → Scanner 실행: memory/*.md 파일 크기 스캔 + 분리 (승인 게이트 1회)
-/memory-health --rules       → Rules Checker: 자동 로드 rules 파일 크기 검사 (read-only, 승인 불필요)
-/memory-health --rules --strict → Rules Checker: WARN 이상 발생 시 exit 2 (CI/CD 파이프라인용)
-/memory-health --fix --json  → dry-run 결과를 JSON 형식으로 출력 (자동화·파이프라인용)
+/memory-health check         → READ-ONLY 진단 (hook-safe, 파일 변경 ❌)
+                              exit 0=정상, 1=warn, 2=critical
+/memory-health fix [--R1...] → Mutating Optimizer (R1~R5+R6, 명시 R번호)
+/memory-health scan          → Scanner (memory/*.md 분리, 1회 승인)
+/memory-health rules         → Rules Checker (자동 로드 파일, read-only)
+/memory-health rules --strict → WARN 이상 exit 2
+/memory-health fix --json    → dry-run JSON 출력
+/memory-health --with-md     → CLAUDE.md 품질 감사 (모든 명령 병용)
+```
+
+**명령 경계 원칙 (DA C-7)**:
+- **check** = READ-ONLY, hook-safe — 자동화 안전
+- **fix / scan / rules** = 명시적 mutating 또는 read-only — 분리된 surface
+- 기본 명령 = `check` (안전 측 default)
+
+### v1 명령 (현재 구현, deprecated alias — 2026-12-31 까지)
+
+```
+/memory-health               → 진단 (= v2 check)
+/memory-health --fix         → Optimizer (= v2 fix, deprecated warning)
+/memory-health --scan        → Scanner (= v2 scan, deprecated warning)
+/memory-health --rules       → Rules Checker (= v2 rules, deprecated warning)
+/memory-health --rules --strict → (= v2 rules --strict)
+/memory-health --fix --json  → (= v2 fix --json)
+/memory-health --with-md     → CLAUDE.md 감사 (v2 동일)
 ```
 
 기본값은 dry-run이므로 파일이 변경되지 않는다.
 
 실행 흐름:
 ```
-/memory-health         → dry-run 결과 출력 (게이트 없음)
-                         ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
+/memory-health         → ① dry-run 결과 출력
+                          ② CLAUDE.md 주기 감사 (30일 경과 or 미실행 시 자동 → claude-md-improver 호출)
+                          ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
 /memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행
 /memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
 /memory-health --rules → Rules Checker 실행 (파일 변경 없음, 게이트 없음)
+/memory-health --with-md → CLAUDE.md 감사 강제 실행 (주기 미경과도 실행)
 ```
 
 ### --fix --json 모드
@@ -76,10 +105,63 @@ touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 
 | 구분 | 파일 | 역할 | 부작용 |
 |------|------|------|--------|
-| hook | `memory-line-check.sh` | 자동 감시 + 경고만 | 없음 |
-| skill | `/memory-health` | 대화형 수동 실행 + 실제 최적화 | 파일 변경 |
+| hook | `memory-line-check.sh` | MEMORY.md 자동 감시 + 경고만 | 없음 |
+| hook | `revise-claude-md-stop.sh` | 작업 완료 감지 → pending 생성 | 없음 |
+| hook | `revise-claude-md-inject.sh` | pending 확인 → /revise-claude-md 자동 주입 | 없음 |
+| skill | `/memory-health` | 대화형 수동 실행 + 실제 최적화 + 주기적 CLAUDE.md 감사 | 파일 변경 |
 
-hook은 경고만 출력한다. 실제 수정은 이 스킬이 담당한다.
+hook은 경고·주입만 한다. 실제 수정은 이 스킬이 담당한다.
+
+---
+
+## CLAUDE.md 주기적 감사 (기본 dry-run에 통합)
+
+> **전제 조건**: `claude-md-management` 플러그인 설치 필요.
+> `claude plugin install claude-md-management` 후 사용 가능.
+
+`/memory-health` 기본 실행(dry-run) 종료 후 자동으로 아래 절차를 수행한다.
+
+### 타임스탬프 기반 주기 판정
+
+```bash
+AUDIT_LAST="$HOME/.claude/da-tools/claude-md-audit-last"
+AUDIT_INTERVAL_DAYS=30   # 기본 30일, CLAUDE_MD_AUDIT_INTERVAL로 오버라이드 가능
+
+if [ ! -f "$AUDIT_LAST" ]; then
+  DAYS_SINCE=9999         # 한 번도 실행 안 됨
+else
+  NOW=$(date +%s)
+  LAST=$(cat "$AUDIT_LAST")
+  DAYS_SINCE=$(( (NOW - LAST) / 86400 ))
+fi
+```
+
+### 판정 결과
+
+| 조건 | 동작 |
+|------|------|
+| `DAYS_SINCE >= 30` 또는 파일 없음 | `claude-md-improver` 스킬 호출 → CLAUDE.md 품질 감사 실행 |
+| `DAYS_SINCE < 30` | "✅ CLAUDE.md 감사 최신 (N일 전)" 출력 후 skip |
+| `--with-md` 플래그 명시 | 30일 미경과여도 강제 실행 |
+
+### 감사 완료 후 타임스탬프 갱신
+
+```bash
+date +%s > "$HOME/.claude/da-tools/claude-md-audit-last"
+```
+
+### `claude-md-improver` 호출 시 수행 내용
+
+1. 현재 작업 디렉토리의 `CLAUDE.md` 파일 탐색 (`find . -name "CLAUDE.md"`)
+2. 각 파일에 대해 품질 평가 (A~F 등급, 6개 기준 × 100점)
+3. 품질 보고서 출력 (이슈 + 권장 추가 사항)
+4. **파일 변경 없음** — 보고서만 출력, 실제 수정은 사용자 승인 필요
+
+CLAUDE.md가 없는 경우:
+```
+ℹ️  CLAUDE.md 없음 — 현재 디렉토리에 CLAUDE.md가 없습니다.
+   프로젝트 루트에서 실행하거나 CLAUDE.md를 먼저 생성하세요.
+```
 
 ---
 
@@ -384,6 +466,60 @@ bash check-rules.sh --strict
 
 ---
 
+## CLAUDE.md 통합 (`--with-md`)
+
+> **전제 조건**: `claude-md-management` 플러그인이 설치되어 있어야 한다.
+> 설치: `claude plugin install claude-md-management`
+> 확인: `claude plugin list`
+
+`--with-md`는 다른 플래그와 병용 가능하다: `/memory-health --with-md`, `/memory-health --fix --with-md`, `/memory-health --scan --with-md`.
+
+### 실행 흐름 (3 Phase)
+
+**Phase A — memory health (기존 동작)**
+- 기존 dry-run / `--fix` / `--scan` / `--rules` 로직 그대로 수행
+- Phase A 완료 후 Phase B로 진행
+
+**Phase B — CLAUDE.md 품질 감사 (`claude-md-improver` 스킬 호출)**
+
+현재 작업 디렉토리의 CLAUDE.md 파일을 감사한다:
+
+```bash
+# CLAUDE.md 파일 존재 여부 사전 확인
+find . -name "CLAUDE.md" -o -name ".claude.local.md" 2>/dev/null | head -10
+```
+
+파일이 존재하면 `claude-md-improver` 스킬의 Phase 1~3(Discovery → Quality Assessment → Quality Report)을 실행한다.
+- 품질 점수 출력 (A~F 등급)
+- 이슈 및 권장 추가사항 출력
+- **이 단계에서는 파일을 수정하지 않는다** (보고만)
+
+파일이 없으면:
+```
+ℹ️  CLAUDE.md 없음 — 현재 디렉토리에 CLAUDE.md가 없습니다.
+   프로젝트 루트에서 실행하거나 CLAUDE.md를 먼저 생성하세요.
+```
+
+**Phase C — 세션 학습 캡처 제안**
+
+Phase B 완료 후 다음 안내를 출력한다:
+
+```
+💡 세션 학습 캡처
+   이번 세션에서 발견한 내용을 CLAUDE.md에 반영하려면:
+   /revise-claude-md
+   (claude-md-management 플러그인 설치 시 사용 가능)
+```
+
+`--fix --with-md` 조합인 경우: Phase A의 `--fix` 완료 후 Phase B→C 순서로 이어진다.
+
+### --with-md 완료 기준
+- Phase A: 기존 모드별 완료 기준과 동일
+- Phase B: CLAUDE.md 품질 보고서 출력 완료 (파일 변경 없음)
+- Phase C: 세션 학습 캡처 안내 출력 완료
+
+---
+
 ## 승인 정책 요약
 
 | 모드 | 승인 필요 | 근거 |
@@ -393,3 +529,5 @@ bash check-rules.sh --strict
 | `--scan` | 1회 필요 | memory/*.md 내용 변경 |
 | `--rules` | 불필요 | read-only, 파일 변경 없음 |
 | `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |
+| `--with-md` (Phase B) | 불필요 | claude-md-improver 보고만 (파일 변경 없음) |
+| `--with-md` Phase B→수정 | 1회 필요 | claude-md-improver 수정 적용 시 별도 승인 |
