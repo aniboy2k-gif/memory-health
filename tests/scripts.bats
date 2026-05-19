@@ -80,19 +80,22 @@ setup() {
 
 # ----- check-rules.sh: 기능 검증 (bats_test_tmpdir 격리) -----
 
-@test "check-rules.sh: CLAUDE_RULES_DIR 미설정 시 exit 1" {
+# check-rules.sh: CLAUDE_RULES_DIR 미설정 시 exit 1
+@test "check-rules.sh CLAUDE_RULES_DIR unset returns exit 1" {
   # 격리: 기존 CLAUDE_RULES_DIR 환경변수 제거
   run env -u CLAUDE_RULES_DIR bash "${SCRIPTS_DIR}/check-rules.sh"
   [ "$status" = "1" ]
 }
 
-@test "check-rules.sh: 존재하지 않는 디렉토리 시 exit 1" {
+# check-rules.sh: 존재하지 않는 디렉토리 시 exit 1
+@test "check-rules.sh nonexistent dir returns exit 1" {
   run env CLAUDE_RULES_DIR="/nonexistent/path/that/does/not/exist" \
       bash "${SCRIPTS_DIR}/check-rules.sh"
   [ "$status" = "1" ]
 }
 
-@test "check-rules.sh: OK 파일만 있으면 exit 0" {
+# check-rules.sh: OK 파일만 있으면 exit 0
+@test "check-rules.sh OK file only returns exit 0" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -109,7 +112,8 @@ setup() {
   [[ "$output" == *"OK"* ]]
 }
 
-@test "check-rules.sh: WARN 파일 존재 시 exit 0 (기본 모드)" {
+# check-rules.sh: WARN 파일 존재 시 exit 0 (기본 모드)
+@test "check-rules.sh WARN file returns exit 0 default mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -126,7 +130,8 @@ setup() {
   [[ "$output" == *"WARN"* ]]
 }
 
-@test "check-rules.sh: WARN 파일 존재 + --strict 시 exit 2" {
+# check-rules.sh: WARN 파일 존재 + --strict 시 exit 2
+@test "check-rules.sh WARN file with --strict returns exit 2" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -141,7 +146,8 @@ setup() {
   [ "$status" = "2" ]
 }
 
-@test "check-rules.sh: CRITICAL 파일 존재 시 exit 0 (read-only)" {
+# check-rules.sh: CRITICAL 파일 존재 시 exit 0 (read-only)
+@test "check-rules.sh CRITICAL file returns exit 0 read-only" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -158,7 +164,8 @@ setup() {
   [[ "$output" == *"CRITICAL"* ]]
 }
 
-@test "check-rules.sh: 숨김 파일(.dotfile) 제외" {
+# check-rules.sh: 숨김 파일(.dotfile) 제외
+@test "check-rules.sh hidden dotfile excluded" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -178,7 +185,8 @@ setup() {
   [[ "$output" != *"CRITICAL"* ]]
 }
 
-@test "check-rules.sh: 서브디렉토리 무시" {
+# check-rules.sh: 서브디렉토리 무시
+@test "check-rules.sh subdirectory ignored" {
   local tmpdir
   tmpdir=$(mktemp -d)
   mkdir -p "${tmpdir}/subdir"
@@ -198,7 +206,8 @@ setup() {
   [[ "$output" != *"CRITICAL"* ]]
 }
 
-@test "check-rules.sh: 심볼릭 링크 follow + 중복 제거" {
+# check-rules.sh: 심볼릭 링크 follow + 중복 제거
+@test "check-rules.sh symlink follow with dedup" {
   local tmpdir
   tmpdir=$(mktemp -d)
 
@@ -214,8 +223,9 @@ setup() {
 
   rm -rf "$tmpdir"
   [ "$status" = "0" ]
-  # WARN은 1건만 출력 (중복 제거)
+  # WARN 등급 라인은 1건만 출력 (중복 제거).
+  # grep 패턴: "WARN" 뒤 공백 + 숫자 + "자" — 등급 라인만 매칭, "WARN N건" 요약 라인 제외.
   local warn_count
-  warn_count=$(echo "$output" | grep -c "WARN" || true)
+  warn_count=$(echo "$output" | grep -cE 'WARN +[0-9,]+자' || true)
   [ "$warn_count" -le 1 ]
 }
