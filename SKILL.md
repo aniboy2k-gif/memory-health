@@ -1,3 +1,9 @@
+---
+name: memory-health
+description: "메모리 파일 건강 상태 진단 + 최적화 (MEMORY.md Optimizer R1~R6 + memory/*.md Scanner + Rules Checker + CLAUDE.md 주기 감사)"
+argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --with-md | --fix | --scan | --rules [--strict] | --fix --json | --fix --with-md | --scan --with-md'
+---
+
 # /memory-health
 
 > 🌐 **[다국어 / Multilingual]**
