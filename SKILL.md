@@ -249,7 +249,7 @@ fi
 ### 전제 조건
 - 스캔 대상: `memory/*.md` (MEMORY.md 제외)
 - 측정 기준: Python `len()` 기준 문자 수 (bytes 아님)
-- 임계: 5000자 초과 파일
+- 임계: 10000자 초과 파일 (Phase F per-file cap 10000 tokens 정합, trader_log #199 2026-05-21)
 
 ### 실행 단계 (6단계)
 
@@ -265,7 +265,7 @@ for f in glob.glob(f"{MEMORY_DIR}/*.md"):
         continue  # Optimizer 전용 파일 — 제외
     content = open(f, encoding="utf-8").read()
     char_count = len(content)
-    if char_count > 5000:
+    if char_count > 10000:
         results.append((f, char_count))
 results.sort(key=lambda x: x[1], reverse=True)
 for f, c in results:
@@ -335,7 +335,7 @@ Phase 2 (Commit):
 ```
 
 ### 완료 기준
-- 모든 처리 파일이 5000자 이하
+- 모든 처리 파일이 10000자 이하 (Phase F per-file cap 정합)
 - MEMORY.md 포인터 갱신 완료 + 인덱스 일관성 검증
 - skill-audit.log에 실행 이력 기록
 
