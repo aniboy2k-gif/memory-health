@@ -90,6 +90,7 @@ for entry in entries:
         current = full_path
         depth = 0
         loop_detected = False
+        chain = set()  # 본 traversal 내 방문 경로 — 실제 순환 감지용. global visited(처리 완료 파일)와 분리 (#186 fix A)
         while os.path.islink(current) and depth < max_depth:
             target = os.readlink(current)
             if not os.path.isabs(target):
@@ -99,9 +100,10 @@ for entry in entries:
             except OSError:
                 loop_detected = True
                 break
-            if real_target in visited:
+            if real_target in chain:  # 본 traversal 내 재방문 = 실제 순환. (서로 다른 symlink 의 동일 대상 dedup 은 아래 resolved in visited 가 처리)
                 loop_detected = True
                 break
+            chain.add(real_target)
             current = target
             depth += 1
 
@@ -146,8 +148,9 @@ for entry in entries:
     results.append((grade, char_count, entry))
 
 # Source A (보조): ~/.claude/CLAUDE.md @파일명 패턴
+# CLAUDE_RULES_NO_SOURCE_A=1 시 비활성화 — 실환경 CLAUDE.md @import 의 test 격리 (#186 fix B)
 claude_md = os.path.expanduser("~/.claude/CLAUDE.md")
-if os.path.exists(claude_md):
+if os.path.exists(claude_md) and os.environ.get("CLAUDE_RULES_NO_SOURCE_A") != "1":
     try:
         refs = re.findall(r'^@(\S+)', open(claude_md, encoding="utf-8").read(), re.MULTILINE)
         for ref in refs:

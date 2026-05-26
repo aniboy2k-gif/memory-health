@@ -229,3 +229,57 @@ setup() {
   warn_count=$(echo "$output" | grep -cE 'WARN +[0-9,]+자' || true)
   [ "$warn_count" -le 1 ]
 }
+
+# check-rules.sh: 정상 dedup symlink 은 순환으로 오분류되면 안 됨 (#186 본질 결함 A fix)
+# 외부 실파일 1개 + 링크 2개 → 2번째 링크가 iteration 순서 무관하게 항상 dedup 케이스 (loop 아님)
+@test "check-rules.sh symlink dedup not misclassified as loop" {
+  local tmpdir realdir
+  tmpdir=$(mktemp -d)
+  realdir=$(mktemp -d)
+  python3 -c "print('x' * 5000)" > "${realdir}/target.md"
+  ln -s "${realdir}/target.md" "${tmpdir}/link-a.md"
+  ln -s "${realdir}/target.md" "${tmpdir}/link-b.md"
+
+  run env CLAUDE_RULES_DIR="$tmpdir" \
+      CLAUDE_RULES_NO_SOURCE_A=1 \
+      bash "${SCRIPTS_DIR}/check-rules.sh"
+
+  rm -rf "$tmpdir" "$realdir"
+  [ "$status" = "0" ]
+  # 두 symlink 가 같은 실파일을 가리키는 정상 dedup → "순환" 오분류 금지
+  ! echo "$output" | grep -q "순환 심볼릭 링크"
+}
+
+# check-rules.sh: 실제 순환 symlink (A→B→A) 는 여전히 감지되어야 함 (#186 fix A 회귀 가드)
+@test "check-rules.sh real symlink cycle still detected" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  # 순환: cyc-a.md → cyc-b.md → cyc-a.md
+  ln -s "${tmpdir}/cyc-b.md" "${tmpdir}/cyc-a.md"
+  ln -s "${tmpdir}/cyc-a.md" "${tmpdir}/cyc-b.md"
+
+  run env CLAUDE_RULES_DIR="$tmpdir" \
+      CLAUDE_RULES_NO_SOURCE_A=1 \
+      bash "${SCRIPTS_DIR}/check-rules.sh"
+
+  rm -rf "$tmpdir"
+  [ "$status" = "0" ]
+  # 실제 순환은 감지 (순환 또는 깊이 초과 마커 출력)
+  echo "$output" | grep -qE "순환 심볼릭 링크|심볼릭 링크 깊이"
+}
+
+# check-rules.sh: CLAUDE_RULES_NO_SOURCE_A=1 시 실환경 CLAUDE.md @import 제외 (#186 본질 결함 B fix)
+@test "check-rules.sh CLAUDE_RULES_NO_SOURCE_A excludes CLAUDE.md @ imports" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  python3 -c "print('x' * 5000)" > "${tmpdir}/only-rule.md"
+
+  run env CLAUDE_RULES_DIR="$tmpdir" \
+      CLAUDE_RULES_NO_SOURCE_A=1 \
+      bash "${SCRIPTS_DIR}/check-rules.sh"
+
+  rm -rf "$tmpdir"
+  [ "$status" = "0" ]
+  # Source A 비활성화 → 실환경 CLAUDE.md 의 @import (예: @RTK.md) 출력 금지 (test 격리)
+  ! echo "$output" | grep -qE '@[A-Za-z]'
+}
