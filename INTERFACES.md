@@ -28,9 +28,11 @@
 | **위치** | `~/.claude/hooks/memory-line-check.sh` (Claude Code hook으로 등록) |
 | **실행 조건** | Claude Code 세션 시작 시 자동 실행 (hook) |
 | **입력** | 없음 (CLAUDE_MEMORY_DIR 환경변수 읽기) |
-| **성공 출력** | stdout: `⚠ MEMORY.md {n}줄 — /memory-health --fix 권장` (180줄 이상일 때만) |
+| **환경변수 (선택)** | `CLAUDE_MEMORY_LINE_WARN` (기본 180) · `CLAUDE_MEMORY_BYTE_WARN` (기본 24500) |
+| **성공 출력** | stdout: `⚠ MEMORY.md lines={n} (≥180) bytes={m} (≥24500) — run /memory-health --fix [— Korean ratio {p}% ...]` (둘 중 하나 이상이 임계값 도달 시) |
 | **부작용** | **없음** — 경고 출력만, 파일 변경 절대 금지 |
 | **exit 코드** | 0 (항상. 경고가 있어도 hook을 차단하지 않음) |
+| **변경 이력** | CSR #807 (2026-05-23): 바이트 캡 + 한글 비율 추가. 25 KB Anthropic Auto Memory cap 대응 |
 
 ---
 
@@ -40,8 +42,8 @@
 |------|------|
 | **위치** | `${CLAUDE_MEMORY_DIR}/memory-health-rules.md` |
 | **첫 줄** | `# version: {semver}` — Optimizer가 버전 일치 여부를 검사 |
-| **현재 필요 버전** | `1.0.0` |
-| **내용** | R1~R5 최적화 규칙 정의 (마크다운 자유 형식) |
+| **현재 필요 버전** | `1.1.0` (CSR #807, 2026-05-23 — R7·R8 추가) |
+| **내용** | R1~R8 최적화 규칙 정의 (마크다운 자유 형식) |
 | **쓰기 주체** | 사용자 (직접 편집) |
 | **읽기 주체** | Optimizer (`--fix` 2단계에서 Read) |
 | **버전 불일치 시** | Optimizer가 stderr 오류 출력 후 exit 1 |

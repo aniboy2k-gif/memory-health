@@ -1,10 +1,13 @@
-# version: 1.0.0
-# memory-health-rules.md — Optimizer 판단 기준 (R1~R5)
+# version: 1.1.0
+# memory-health-rules.md — Optimizer 판단 기준 (R1~R8)
 #
 # 이 파일은 /memory-health --fix 실행 시 Optimizer가 MEMORY.md 최적화 후보를
 # 선정하는 규칙을 정의한다. 즉흥적 판단 금지 — 이 파일에 없는 기준은 적용 불가.
 #
 # 사용자 환경에 맞게 규칙을 수정하여 사용하세요.
+#
+# CSR #807 (2026-05-23): R7 자연어 포인터 우선 + R8 path-scoped rules 활용 추가.
+# 버전 1.0.0 → 1.1.0.
 
 ## R1: 중복 포인터 제거
 
@@ -110,9 +113,52 @@ memory-health 가 변경한 파일은 **별도 sidecar 파일에 fingerprint** �
 
 ---
 
+## R7: 자연어 포인터 우선 (vs @import) — CSR #807
+
+R3 (인라인 → 포인터) 적용 시, **자연어 포인터를 `@import`보다 우선**한다.
+
+**판정 기준**:
+- `@path/to/file.md` import 문법은 **조직화 도구이지 토큰 절감 도구가 아니다**
+- 임포트된 파일은 launch 시점에 풀로드 → MEMORY.md 본문과 동일하게 토큰 소비
+- 자연어 포인터 형식 (`파일경로 [트리거 1줄]`) 은 Claude가 필요할 때만 Read
+
+**권장 형식**:
+```
+- `feedback_xxx.md` [트리거 조건 1줄]
+- `project_yyy.md [트리거 조건 1줄]`
+```
+
+**근거**: Anthropic Claude Code 공식 문서 (code.claude.com/docs/en/memory) — "@imports help organization but do not reduce context". CSR #806 4-AI 리서치 강한 합의.
+
+---
+
+## R8: path-scoped rules 활용 권고 (트리거 미발동 시 0 토큰) — CSR #807
+
+특정 트리거 경로에서만 필요한 규칙은 `~/.claude/rules/projects/*.md` 에 frontmatter `paths:` 와 함께 배치한다.
+
+**판정 기준**:
+- "프로젝트별·도메인별 규칙" 섹션이 MEMORY.md 본문에 인라인되어 있고
+- 해당 규칙이 특정 경로 작업 시에만 필요한 경우 (모든 세션 무관 로드 불필요)
+
+**권장 형식** (rules 파일 frontmatter):
+```yaml
+---
+description: <프로젝트 규칙 요약>
+paths:
+  - "**/<project>/**"
+---
+```
+
+**효과**: 트리거 미발동 세션 = 0 토큰 (CSR #806 옵션 A 적용 — 약 18줄 감축 입증).
+
+**근거**: 공식 문서 "Path-specific rules". CSR #806 path-scoped 이관으로 MEMORY.md 25KB 캡 해소 사례.
+
+---
+
 ## 적용 순서
 
-R1(중복) → R2(만료) → R5(테이블 압축) → R3(인라인→포인터) → R4(비활성 피드백) → **R6(fingerprint 갱신)**
+R1(중복) → R2(만료) → R5(테이블 압축) → R3(인라인→포인터) → R4(비활성 피드백) → R7(@import → 자연어 포인터) → R8(path-scoped routing) → **R6(fingerprint 갱신)**
 
-R4는 사용자 데이터 보존 위험이 있으므로 마지막에 제안한다.
-R6은 R1~R5 적용 후 sidecar 갱신 — 항상 마지막 단계.
+R4는 사용자 데이터 보존 위험이 있으므로 마지막 *제안* 단계 (수동 확인).
+R7·R8은 R3 후속 처리 — 인라인 → 포인터 시 destination·형식 선택 가이드.
+R6은 R1~R8 적용 후 sidecar 갱신 — 항상 마지막 단계.

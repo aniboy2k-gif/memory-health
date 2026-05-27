@@ -40,7 +40,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 ```
 /memory-health check         → READ-ONLY 진단 (hook-safe, 파일 변경 ❌)
                               exit 0=정상, 1=warn, 2=critical
-/memory-health fix [--R1...] → Mutating Optimizer (R1~R5+R6, 명시 R번호)
+/memory-health fix [--R1...] → Mutating Optimizer (R1~R8, 명시 R번호) — CSR #807 R7·R8 추가
 /memory-health scan          → Scanner (memory/*.md 분리, 1회 승인)
 /memory-health rules         → Rules Checker (자동 로드 파일, read-only)
 /memory-health rules --strict → WARN 이상 exit 2
@@ -174,7 +174,8 @@ CLAUDE.md가 없는 경우:
 ## Optimizer: MEMORY.md 줄 수 최적화 (`--fix`)
 
 ### 전제 조건
-- hook(memory-line-check.sh)이 ≥ 180줄 경고를 발생시킨 경우에 실행 권장
+- hook(memory-line-check.sh)이 **≥ 180줄 또는 ≥ 24,500 bytes** 경고를 발생시킨 경우에 실행 권장
+- 한글 비율 14%+ 환경에서는 **바이트가 줄 수보다 먼저 캡 도달** (CSR #806 입증). 줄 수만 추적 시 silent truncation 위험
 - MEMORY.md는 Scanner(`--scan`) 스캔 대상에서 제외 (이 파일만 Optimizer 적용)
 
 ### 실행 단계 (7단계)
@@ -189,14 +190,14 @@ wc -c "${MEMORY_DIR}/MEMORY.md"
 
 **2단계 — 분석**
 ```bash
-RULES_VERSION_REQUIRED="1.0.0"
+RULES_VERSION_REQUIRED="1.1.0"
 RULES_FILE="${MEMORY_DIR}/memory-health-rules.md"
 # rules.md 존재 + 버전 정합 검증
 [ -r "$RULES_FILE" ] || { echo "❌ Rules file not found: $RULES_FILE" >&2; exit 1; }
 grep -q "^# version: $RULES_VERSION_REQUIRED" "$RULES_FILE" \
   || { echo "❌ Rules version mismatch (required: $RULES_VERSION_REQUIRED)" >&2; exit 1; }
 ```
-판단 기준 R1~R5를 로드하여 최적화 후보를 식별한다.
+판단 기준 **R1~R8**을 로드하여 최적화 후보를 식별한다 (R7·R8 = CSR #807 추가).
 즉흥적 판단 금지 — 반드시 rules 파일의 기준을 적용한다.
 
 **3단계 — 제안 (dry-run)**
@@ -225,22 +226,35 @@ fi
 승인된 변경 사항을 MEMORY.md에 적용한다.
 Scanner 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
 
-**7단계 — 검증 (의무)**
+**7단계 — 검증 (의무)** — CSR #807: 줄 수 + 바이트 동시 검증
+
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
-if [ "$LINES" -gt 180 ]; then
-  echo "⚠ Verification failed: ${LINES} lines (target ≤ 180). Further optimization needed." >&2
+BYTES=$(wc -c < "${MEMORY_DIR}/MEMORY.md")
+
+LINE_FAIL=0
+BYTE_FAIL=0
+[ "$LINES" -gt 180 ] && LINE_FAIL=1
+[ "$BYTES" -gt 24500 ] && BYTE_FAIL=1
+
+if [ "$LINE_FAIL" -eq 1 ] || [ "$BYTE_FAIL" -eq 1 ]; then
+  echo "⚠ Verification failed: lines=${LINES}/180 bytes=${BYTES}/24500. Further optimization needed." >&2
 else
-  echo "✅ Verification passed: ${LINES} lines (target ≤ 180)"
-  # 200줄 cap 대비 20줄 안전 마진 (hook 경고 임계값 180과 일치)
+  echo "✅ Verification passed: lines=${LINES}/180 bytes=${BYTES}/24500"
+  # 200줄·25KB cap 대비 20줄·1100바이트 안전 마진 (hook 경고 임계값과 일치)
   ~/.claude/skills/memory-health/scripts/memory-health-log.sh \
-    "F3" "MEMORY.md 최적화" "${BEFORE}줄" "${LINES}줄"
+    "F3" "MEMORY.md 최적화" "${BEFORE}줄" "${LINES}줄/${BYTES}바이트"
 fi
 ```
 
 ### 완료 기준
 - MEMORY.md 줄 수 ≤ 180 (`wc -l` 검증 통과)
+- MEMORY.md 바이트 ≤ 24,500 (`wc -c` 검증 통과) — **CSR #807 신설**
 - skill-audit.log에 실행 이력 기록
+
+### 주의 — 한글 다수 환경 (CSR #807 박제, S4)
+한국어는 영문 대비 1.3~1.5배 토큰을 소비하므로 한글 비율 14%+ 환경에서는 **줄 수보다 바이트가 먼저 25KB 캡 도달**한다.
+줄 수만 추적할 경우 25KB 캡 초과 silent truncation 발생 가능 (CSR #806 실증: 193줄 = 25,849 bytes = 캡 249 bytes 초과 상태에서 자동 로드 일부 truncate 위험). 줄 수와 바이트 동시 추적 필수.
 
 ---
 
@@ -399,7 +413,7 @@ Phase 2 (Commit):
 
 ### 전제 조건
 - `CLAUDE_RULES_DIR` 환경변수가 절대 경로로 설정되어 있어야 한다 (미설정 시 exit 1)
-- `install.sh` 실행 후 `~/.claude/da-tools/env.sh`를 source하면 자동 설정
+- `CLAUDE_RULES_DIR` 설정: ① 권장 — `~/.zshrc` 등 shell profile에 `export CLAUDE_RULES_DIR=...` 직접 추가 · ② `install.sh` 실행 중 대화형 프롬프트(기본값 N)에서 저장을 선택하면 `~/.claude/da-tools/` 아래 `env.sh`가 생성되며 이를 source. 저장을 생략하면 `env.sh`는 생성되지 않으므로 ①을 사용
 - 스캔 대상: `CLAUDE_RULES_DIR` 직접 자식 `.md` 파일만 (서브디렉토리 무시)
 - 파일 수정 없음 (read-only) → 승인 게이트 없음
 
@@ -550,3 +564,12 @@ Phase B 완료 후 다음 안내를 출력한다:
 | `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |
 | `--with-md` (Phase B) | 불필요 | claude-md-improver 보고만 (파일 변경 없음) |
 | `--with-md` Phase B→수정 | 1회 필요 | claude-md-improver 수정 적용 시 별도 승인 |
+
+---
+
+## CHANGELOG
+
+| 일자 | 변경 |
+|------|------|
+| 2026-05-23 | **CSR #807 — 25KB 바이트 캡 + 한글 비율 모니터링 + R7~R8 룰 추가**. memory-line-check.sh에 BYTE_COUNT + 한글 비율 측정 추가 (`CLAUDE_MEMORY_BYTE_WARN=24500` env 지원). memory-health-rules.md R7 자연어 포인터 우선 + R8 path-scoped rules 활용 신설. SKILL.md 7단계 검증을 줄 수 + 바이트 동시 검증으로 확장. rule_version 1.0.0 → 1.1.0. 한글 14%+ 환경 byte cap silent truncation 주의 박제. 근거: CSR #806 (193줄 = 25,849 bytes = 캡 249 bytes 초과 실증) + Anthropic 공식 문서 RAG (ChatGPT·Claude Web 강한 합의). |
+| 2026-05-19 | CSR #656·#658·#659·#671·#779 — R6 Sidecar Fingerprint + 재설계 Phase C·D 시리즈. |
