@@ -1,5 +1,10 @@
 name: Test (bats)
 
+# Target environment: macOS only (personal Mac Mini M4 tooling).
+# CI runs on macos-latest to match the actual runtime — Linux is NOT a support
+# target (CSR #962 decision). Earlier ubuntu runs were red on an env-specific
+# detect_memory_dir test that never applied to the real environment.
+
 on:
   push:
     branches: [main]
@@ -10,23 +15,14 @@ permissions:
 
 jobs:
   bats:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install bats
+      - name: Install bats + shellcheck (Homebrew)
         run: |
-          if ! command -v bats >/dev/null; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends bats
-          fi
+          brew install bats-core shellcheck
           bats --version
-
-      - name: Install shellcheck (for bats internal checks)
-        run: |
-          if ! command -v shellcheck >/dev/null; then
-            sudo apt-get install -y --no-install-recommends shellcheck
-          fi
           shellcheck --version
 
       - name: Ensure python3 is available
@@ -42,3 +38,8 @@ jobs:
           bats tests/test-r1-r6.bats
           bats tests/r6-sidecar-idempotency.bats
           bats tests/red-green-tdd.bats
+
+      - name: Run shell tests — rules drift detection (CSR #962)
+        run: |
+          bash tests/test-memory-health-state.sh
+          bash tests/test-drift-check.sh
