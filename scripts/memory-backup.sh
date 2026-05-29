@@ -69,16 +69,18 @@ if [ -z "$SOURCE_FILES" ]; then
 fi
 
 SOURCE_COUNT=$(echo "$SOURCE_FILES" | wc -l | tr -d ' ')
-SOURCE_BYTES=$(echo "$SOURCE_FILES" | xargs du -cb 2>/dev/null | tail -1 | awk '{print $1}')
+# total content bytes — portable (macOS/BSD du lacks -b); cat→wc -c is batching-safe
+SOURCE_BYTES=$(echo "$SOURCE_FILES" | tr '\n' '\0' | xargs -0 cat 2>/dev/null | wc -c | tr -d ' ')
 
-echo "$SOURCE_FILES" | xargs cp -t "$BACKUP_DEST" 2>/dev/null || {
+# portable copy (macOS/BSD cp lacks -t); null-delimited, one file per invocation
+echo "$SOURCE_FILES" | tr '\n' '\0' | xargs -0 -I{} cp {} "$BACKUP_DEST" 2>/dev/null || {
   echo "❌ Backup failed: error copying files" >&2
   exit 1
 }
 
 # verify backup integrity (file count + byte size)
 DEST_COUNT=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
-DEST_BYTES=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" -exec du -cb {} + 2>/dev/null | tail -1 | awk '{print $1}')
+DEST_BYTES=$(find "${BACKUP_DEST}" -maxdepth 1 -name "*.md" -print0 2>/dev/null | xargs -0 cat 2>/dev/null | wc -c | tr -d ' ')
 
 if [ "$SOURCE_COUNT" != "$DEST_COUNT" ]; then
   echo "❌ Backup verification failed: source ${SOURCE_COUNT} files → backup ${DEST_COUNT} files (mismatch)" >&2

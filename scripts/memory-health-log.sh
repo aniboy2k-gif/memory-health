@@ -17,7 +17,8 @@ LOG_FILE="${MEMORY_DIR}/skill-audit.log"
 TIMESTAMP=$(date +"%Y-%m-%dT%H:%M:%S%z")
 
 # rotate: when log exceeds 50KB (cp+truncate — avoids data loss if mv is interrupted)
-if [ "$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)" -gt 51200 ]; then
+# guard existence first: avoids shell-level redirect stderr leak on first write (file absent)
+if [ -f "$LOG_FILE" ] && [ "$(wc -c < "$LOG_FILE")" -gt 51200 ]; then
   cp "$LOG_FILE" "$LOG_FILE.old" || { echo "❌ Log rotate failed — logging aborted" >&2; exit 1; }
   truncate -s 0 "$LOG_FILE"
 fi
