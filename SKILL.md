@@ -194,15 +194,19 @@ wc -c "${MEMORY_DIR}/MEMORY.md"
 ```
 현재 줄 수와 바이트 수를 출력한다.
 
-**2단계 — 분석**
+**2단계 — 분석** (CSR #962: 버전 문자열 grep → drift-check 기반 정합 검증으로 교체)
 ```bash
-RULES_VERSION_REQUIRED="1.1.0"
 RULES_FILE="${MEMORY_DIR}/memory-health-rules.md"
-# rules.md 존재 + 버전 정합 검증
+DRIFT="$HOME/.claude/skills/memory-health/scripts/memory-rules-drift-check.sh"
+# rules.md 존재 확인
 [ -r "$RULES_FILE" ] || { echo "❌ Rules file not found: $RULES_FILE" >&2; exit 1; }
-grep -q "^# version: $RULES_VERSION_REQUIRED" "$RULES_FILE" \
-  || { echo "❌ Rules version mismatch (required: $RULES_VERSION_REQUIRED)" >&2; exit 1; }
+# 정합 검증: 버전 문자열(위조·stale fork 통과 가능)이 아니라 content drift로 판정.
+# 기대 버전은 하드코딩하지 않고 번들 템플릿에서 파생(H-3 단일 소스).
+bash "$DRIFT" --check || echo "⚠ rules 드리프트 감지 — 위 안내 확인 후 진행 (silent pass 금지)"
 ```
+- **Fix B**: `# version:` 줄은 사람이 읽는 보조 마커로만 사용. 정합의 권위는 drift-check(axis0 canonical↔번들 / axis1 활성본↔base / axis2 번들 version)에 있다. 버전만 올린 stale fork는 axis0/axis2에서 잡힌다.
+- **H-3**: 기대 버전을 SKILL.md에 하드코딩하지 않는다(과거 `RULES_VERSION_REQUIRED="1.1.0"` 제거). 번들 템플릿의 `# version:`이 단일 소스.
+
 판단 기준 **R1~R8**을 로드하여 최적화 후보를 식별한다 (R7·R8 = CSR #807 추가).
 즉흥적 판단 금지 — 반드시 rules 파일의 기준을 적용한다.
 
