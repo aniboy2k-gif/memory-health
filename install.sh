@@ -109,8 +109,10 @@ copy_rules_template() {
   else
     # 기존 존재: drift 검사로 silent 미전파 차단 (Fix D)
     local t_ver d_ver
-    t_ver="$(grep -m1 '^# version:' "$rules_template" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]')"
-    d_ver="$(grep -m1 '^# version:' "$rules_dest" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]')"
+    # `|| true`: grep returns rc1 when the file has no "# version:" line; under
+    # `set -e` (+pipefail) that would abort the function. Keep extraction safe.
+    t_ver="$(grep -m1 '^# version:' "$rules_template" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]' || true)"
+    d_ver="$(grep -m1 '^# version:' "$rules_dest" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]' || true)"
     if [ -n "$t_ver" ] && [ "$t_ver" != "$d_ver" ]; then
       cp "$rules_template" "${rules_dest}.new"
       echo "⚠ memory-health-rules.md 업스트림 갱신 감지 (활성=${d_ver:-?} → 템플릿=${t_ver})."

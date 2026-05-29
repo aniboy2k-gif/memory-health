@@ -66,49 +66,52 @@ MEMORY.md 내 마크다운 테이블에서 내용이 비어 있거나 "—"만 �
 
 ---
 
-## R6: Sidecar Manifest (Drift Detection + Idempotency)
+## R6: Sidecar Fingerprint (Idempotency Invariant)
 
-> **신설**: 2026-05-19 — CSR #656 DA Tier 1 C-4 정합 (압축 death spiral 차단).
-> **구현**: 2026-05-29 — CSR #962 (da-q + da-chain 4-AI 검증). rules 파일은 **별도 매니페스트(sidecar)**에 fingerprint를 기록하여 drift를 감지하고 중복 변경을 차단한다.
+> **신설**: 2026-05-19 — CSR #656 DA Tier 1 C-4 정합 (압축 death spiral 차단). 본 R6은 R1~R5의 idempotency 보장 layer.
 
-### Sidecar 위치 (User memory 외부 — 도구 metadata)
+memory-health 가 변경한 파일은 **별도 sidecar 파일에 fingerprint** 기록한다. 동일 입력 재실행 시 sidecar hash 비교로 **중복 변경 차단**.
+
+### Sidecar 위치 (User memory 외부)
 
 ```
-~/.claude/da-tools/memory-health-state/rules.manifest.json
+~/.claude/da-tools/memory-health-fingerprints/{file-path-sha256-prefix}.json
 ```
 
-> **중요**: 매니페스트는 user memory 파일 **외부**에 저장 — inline marker 금지 (user memory contamination 차단). 구현: `scripts/memory-health-state.sh` (read/write), `scripts/memory-rules-drift-check.sh` (감지).
+> **중요 (ChatGPT C-2 정합)**: fingerprint marker 자체는 user memory 파일 외부 저장 — **inline marker 금지** (user memory contamination 차단).
 
-### Manifest 스키마 (파일별 배열)
+### Sidecar 스키마
 
 ```json
 {
-  "schema_version": "1",
-  "self_checksum": "<sha256 of canonical JSON with self_checksum emptied>",
-  "updated_at": "<iso8601>",
-  "entries": [
-    { "path": "<활성 rules 파일 절대경로>",
-      "version": "1.1.0",
-      "bundle_sha256": "...",
-      "installed_sha256": "...",
-      "installed_at": "<iso8601>" }
-  ]
+  "file_path": "/Users/.../MEMORY.md",
+  "last_run_sha256": "abc123...",
+  "last_run_rules": ["R1", "R5"],
+  "last_run_timestamp": "2026-05-19T10:00:00Z",
+  "tool_version": "1.1.0",
+  "rule_version": "1.0.0"
 }
 ```
 
-### 동작 (2축 + canonical 감지)
+### 동작
 
-- **axis0** canonical↔번들 sha256 (실사본 배포 시 의미; symlink 배포는 no-op)
-- **axis1** 활성본 sha256 vs `installed_sha256` → 사용자 수정 여부
-- **axis2** 번들 `# version:` vs manifest `version` → 업스트림 갱신 여부
-- 드리프트 감지 시 stderr advisory (비차단). `--acknowledge`로 재기준선, `--diff`로 차이 확인.
+1. **변경 전**: 현 파일 sha256 → sidecar `last_run_sha256` 비교
+2. **일치**: 변경 ❌ (이미 적용됨, idempotency 보장) — stderr 안내 + exit 0
+3. **불일치**: 변경 진행 + sidecar 갱신 (atomic write: `.tmp` → rename)
+4. **신규**: sidecar 부재 = 첫 실행 — 변경 진행 후 sidecar 생성
 
-### 무결성·복구 (M-A — GPG/HMAC 미사용, 위협모델=부주의한 자신)
+### Edge case
 
-- **self_checksum**: JSON body sha256 → 우발적 손상·bit-rot 감지 (rc5)
-- **atomic write**: `mktemp` → `mv -f` (partial write 방지)
-- **복구**: 매니페스트 부재(rc2)·unparseable(rc3)·schema invalid(rc4)·checksum 불일치(rc5) → 번들에서 재기준선(self-heal)
-- 사용자 직접 편집 → axis1 감지(차단 아님) → 의도적이면 `acknowledge`
+- 사용자 직접 편집 → sha256 불일치 → 변경 진행 (정상)
+- sidecar 손상/삭제 → 변경 + sidecar 재생성
+- TOCTOU → atomic rename + 변경 도중 hash 재검증
+
+### 제약 (구현 시 — 후속 세션)
+
+- Sidecar 디렉토리 = `~/.claude/da-tools/memory-health-fingerprints/` (별도 SYNC, claude-forge 비대상)
+- sidecar는 user memory ❌ — 도구 metadata (DA C-3 privacy 정합)
+
+> **참고 (CSR #962)**: 본 R6(MEMORY.md 최적화 idempotency용 per-file fingerprint)은 여전히 미구현(spec-only). CSR #962가 추가한 `scripts/memory-rules-drift-check.sh` + `memory-health-state/rules.manifest.json`은 **별개 개념**(rules 파일 자체의 drift 감지)으로 R6와 다르다. 혼동 금지.
 
 ---
 
