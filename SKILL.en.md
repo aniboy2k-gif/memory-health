@@ -107,16 +107,20 @@ wc -c "${MEMORY_DIR}/MEMORY.md"
 ```
 Prints the current line count and byte size.
 
-**Step 2 — Analyze**
+**Step 2 — Analyze** (CSR #962: version-string grep replaced by drift-check validation)
 ```bash
-RULES_VERSION_REQUIRED="1.0.0"
 RULES_FILE="${MEMORY_DIR}/memory-health-rules.md"
-# verify rules file exists and version matches
+DRIFT="$HOME/.claude/skills/memory-health/scripts/memory-rules-drift-check.sh"
+# verify rules file exists
 [ -r "$RULES_FILE" ] || { echo "❌ Rules file not found: $RULES_FILE" >&2; exit 1; }
-grep -q "^# version: $RULES_VERSION_REQUIRED" "$RULES_FILE" \
-  || { echo "❌ Rules version mismatch (required: $RULES_VERSION_REQUIRED)" >&2; exit 1; }
+# Integrity via content drift, NOT a version string (which a stale fork can fake).
+# Expected version is derived from the bundle template, never hardcoded here (H-3).
+bash "$DRIFT" --check || echo "⚠ rules drift detected — review guidance above before proceeding (no silent pass)"
 ```
-Loads rules R1–R5 and identifies optimization candidates.
+- **Fix B**: the `# version:` line is a human-readable secondary marker only. Integrity authority is the drift-check (axis0 canonical↔bundle / axis1 active↔base / axis2 bundle version). A version-only-bumped stale fork is caught by axis0/axis2.
+- **H-3**: the expected version is NOT hardcoded in SKILL files (removed the old `RULES_VERSION_REQUIRED`). The bundle template `# version:` is the single source.
+
+Loads rules R1–R8 and identifies optimization candidates.
 No ad-hoc judgment — always apply the criteria from the rules file.
 
 **Step 3 — Propose (dry-run)**

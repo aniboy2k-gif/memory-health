@@ -111,6 +111,8 @@ memory-health 가 변경한 파일은 **별도 sidecar 파일에 fingerprint** �
 - Sidecar 디렉토리 = `~/.claude/da-tools/memory-health-fingerprints/` (별도 SYNC, claude-forge 비대상)
 - sidecar는 user memory ❌ — 도구 metadata (DA C-3 privacy 정합)
 
+> **참고 (CSR #962)**: 본 R6(MEMORY.md 최적화 idempotency용 per-file fingerprint)은 여전히 미구현(spec-only). CSR #962가 추가한 `scripts/memory-rules-drift-check.sh` + `memory-health-state/rules.manifest.json`은 **별개 개념**(rules 파일 자체의 drift 감지)으로 R6와 다르다. 혼동 금지.
+
 ---
 
 ## R7: 자연어 포인터 우선 (vs @import) — CSR #807

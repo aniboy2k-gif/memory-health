@@ -14,7 +14,12 @@ detect_memory_dir() {
   # 방법 A: 실행 중인 Claude Code 프로세스에서 경로 감지
   if command -v lsof >/dev/null 2>&1; then
     local _pid
-    _pid=$(pgrep -f 'claude' | head -1)
+    # `|| true`: pgrep exits 1 when no 'claude' process is running (e.g. CI). With
+    # `set -euo pipefail` active, that non-zero would abort the whole function via
+    # the command substitution, making detect_memory_dir return empty even though
+    # method C (stdin) could succeed. Root cause of the macOS/ubuntu CI failure of
+    # the bats "detect_memory_dir returns path from stdin redirect" test (CSR #962).
+    _pid=$(pgrep -f 'claude' | head -1 || true)
     if [ -n "$_pid" ]; then
       detected=$(lsof -p "$_pid" 2>/dev/null \
         | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
@@ -89,21 +94,45 @@ create_required_files() {
 }
 
 # copy_rules_template: $1=memory_dir, $2=skill_dir
-# 동작: skill_dir/memory-health-rules.md 가 있으면 memory_dir 로 복사 (덮어쓰기 금지)
-# returns: 0 (always — 템플릿 부재 또는 대상 존재 시 메시지만)
+# 동작 (CSR #962): 신규 설치 시 복사 + 매니페스트 박제(Fix A). 기존 존재 시
+#   drift 검사 → 업스트림 갱신(axis2)이면 .new 파일 생성 + 경고(Fix D, dpkg
+#   --force-confold 패턴, CI-safe: 사용자 파일 보존). 덮어쓰기 금지는 유지하되
+#   "silent 미전파"는 제거 — 갱신을 loud하게 알린다.
+# returns: 0 (always)
 copy_rules_template() {
   local memory_dir="$1"
   local skill_dir="$2"
   local rules_template="${skill_dir}/memory-health-rules.md"
   local rules_dest="${memory_dir}/memory-health-rules.md"
+  local drift="${skill_dir}/scripts/memory-rules-drift-check.sh"
 
-  if [ -f "$rules_template" ]; then
-    if [ -f "$rules_dest" ]; then
-      echo "ℹ️  memory-health-rules.md가 이미 존재합니다. 덮어쓰지 않습니다."
+  [ -f "$rules_template" ] || return 0
+
+  if [ ! -f "$rules_dest" ]; then
+    cp "$rules_template" "$rules_dest"
+    echo "✅ memory-health-rules.md (템플릿에서 복사)"
+  else
+    # 기존 존재: drift 검사로 silent 미전파 차단 (Fix D)
+    local t_ver d_ver
+    # `|| true`: grep returns rc1 when the file has no "# version:" line; under
+    # `set -e` (+pipefail) that would abort the function. Keep extraction safe.
+    t_ver="$(grep -m1 '^# version:' "$rules_template" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]' || true)"
+    d_ver="$(grep -m1 '^# version:' "$rules_dest" 2>/dev/null | sed 's/^# version:[[:space:]]*//' | tr -d '[:space:]' || true)"
+    if [ -n "$t_ver" ] && [ "$t_ver" != "$d_ver" ]; then
+      cp "$rules_template" "${rules_dest}.new"
+      echo "⚠ memory-health-rules.md 업스트림 갱신 감지 (활성=${d_ver:-?} → 템플릿=${t_ver})."
+      echo "   사용자 파일 보존. 새 템플릿: ${rules_dest}.new"
+      echo "   비교: memory-rules-drift-check.sh --diff / 적용: 검토 후 수동 병합 또는 memory-health acknowledge"
     else
-      cp "$rules_template" "$rules_dest"
-      echo "✅ memory-health-rules.md (템플릿에서 복사)"
+      echo "ℹ️  memory-health-rules.md 최신 (활성=${d_ver:-?}). 덮어쓰지 않습니다."
     fi
+  fi
+
+  # Fix A: 설치 시 매니페스트 박제 (drift-check가 baseline 수행, 부재면 self-heal)
+  if [ -x "$drift" ]; then
+    MH_ACTIVE_RULES="$rules_dest" MH_BUNDLE_RULES="$rules_template" \
+      bash "$drift" >/dev/null 2>&1 || true
+    echo "✅ rules 매니페스트 박제 (drift 감지 baseline)"
   fi
 
   return 0
