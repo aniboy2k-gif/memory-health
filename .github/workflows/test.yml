@@ -43,3 +43,4 @@ jobs:
         run: |
           bash tests/test-memory-health-state.sh
           bash tests/test-drift-check.sh
+          bash tests/test-skill-update.sh
