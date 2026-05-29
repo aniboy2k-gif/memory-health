@@ -14,7 +14,12 @@ detect_memory_dir() {
   # 방법 A: 실행 중인 Claude Code 프로세스에서 경로 감지
   if command -v lsof >/dev/null 2>&1; then
     local _pid
-    _pid=$(pgrep -f 'claude' | head -1)
+    # `|| true`: pgrep exits 1 when no 'claude' process is running (e.g. CI). With
+    # `set -euo pipefail` active, that non-zero would abort the whole function via
+    # the command substitution, making detect_memory_dir return empty even though
+    # method C (stdin) could succeed. Root cause of the macOS/ubuntu CI failure of
+    # the bats "detect_memory_dir returns path from stdin redirect" test (CSR #962).
+    _pid=$(pgrep -f 'claude' | head -1 || true)
     if [ -n "$_pid" ]; then
       detected=$(lsof -p "$_pid" 2>/dev/null \
         | grep -o "${HOME}/.claude/projects/[^/]*/memory" \
