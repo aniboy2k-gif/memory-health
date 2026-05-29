@@ -14,12 +14,21 @@ trap 'rm -rf "$WORK"' EXIT
 export MEMORY_HEALTH_STATE_DIR="$WORK/state"
 export MH_REMOTE_COOLDOWN=14400
 
-# bare "remote" + working clone
-git init -q --bare "$WORK/remote.git"
-git clone -q "$WORK/remote.git" "$WORK/clone" 2>/dev/null
+# Deterministic git env (CI-robust): isolated config, main default, file:// allowed.
+export GIT_CONFIG_GLOBAL="$WORK/gitconfig"
+export GIT_CONFIG_SYSTEM=/dev/null
+git config -f "$WORK/gitconfig" init.defaultBranch main
+git config -f "$WORK/gitconfig" user.email t@t
+git config -f "$WORK/gitconfig" user.name t
+git config -f "$WORK/gitconfig" protocol.file.allow always
+
+# bare "remote" + working repo (init+push, not clone-of-empty)
+git init -q --bare -b main "$WORK/remote.git"
+git init -q -b main "$WORK/clone"
 cd "$WORK/clone"
-git config user.email t@t; git config user.name t
-echo v1 > f.txt; git add f.txt; git commit -qm c1; git branch -M main; git push -q origin main
+echo v1 > f.txt; git add f.txt; git commit -qm c1
+git remote add origin "$WORK/remote.git"
+git push -q -u origin main
 export MH_SKILL_REPO="$WORK/clone"
 
 echo "== check-skill-update.sh tests =="
