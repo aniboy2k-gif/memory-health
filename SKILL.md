@@ -33,9 +33,14 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 
 ## 사용법
 
-### v2 명령 구조 (Spec — CSR #656 DA Tier 1 C-7 정합, 2026-05-19)
+### v2 명령 구조 (CSR #656 DA Tier 1 C-7 정합, 2026-05-19)
 
-> **상태**: spec 박제 완료. 구현은 후속 PR (인계 md `~/.claude/da-archive/memory-health-redesign-handoff-2026-05-19.md` 참조). v1 명령은 backward 호환으로 계속 동작.
+> **상태 (P7 disposition, CSR #962, 2026-05-29)**: v2 명령은 본 SKILL.md 절차 **해석 기반으로 동작 중** — 별도 dispatcher 스크립트는 불필요하며 추가 구현 예정 없음.
+> - `catalog`·`rules`는 전용 스크립트(`scripts/catalog.sh`·`scripts/check-rules.sh`)로 실행
+> - `check`·`fix`·`scan`은 본 SKILL.md 절차로 수행 (Claude 해석)
+> - v1 명령은 deprecated alias로 계속 동작 (2026-12-31까지)
+>
+> 과거 "구현은 후속 PR / Phase E+F" 대기 항목은 **종료**한다(해석 기반이 현실의 구현). 인계 md(`~/.claude/da-archive/memory-health-redesign-handoff-2026-05-19.md`)는 이력 참고용.
 
 ```
 /memory-health check         → READ-ONLY 진단 (hook-safe, 파일 변경 ❌)
@@ -71,7 +76,8 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 실행 흐름:
 ```
 /memory-health         → ① dry-run 결과 출력
-                          ② CLAUDE.md 주기 감사 (30일 경과 or 미실행 시 자동 → claude-md-improver 호출)
+                          ② skill 원격 최신화 점검 (CSR #962 — 인터넷 fetch, 4h 쿨다운, 비차단)
+                          ③ CLAUDE.md 주기 감사 (30일 경과 or 미실행 시 자동 → claude-md-improver 호출)
                           ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
 /memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행
 /memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
@@ -123,6 +129,23 @@ touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 | skill | `/memory-health` | 대화형 수동 실행 + 실제 최적화 + 주기적 CLAUDE.md 감사 | 파일 변경 |
 
 hook은 경고·주입만 한다. 실제 수정은 이 스킬이 담당한다.
+
+---
+
+## skill 원격 최신화 점검 (기본 실행 ②, CSR #962)
+
+`/memory-health` 기본 실행(dry-run) 시, 설치된 skill이 **원격(github)보다 뒤처졌는지** 인터넷에서 점검한다. `forge-update-check.sh`의 검증된 패턴을 미러링한다.
+
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
+```
+
+- **동작**: `git fetch origin`(4초 타임아웃) → 로컬 HEAD vs origin 기본 브랜치 비교 → 뒤처지면 advisory 1줄("skill 업데이트 N commit 있음 … git pull")
+- **쿨다운 4h**: 매 실행 fetch 방지 (`MEMORY_HEALTH_STATE_DIR/.remote-check-last`). `--force`로 무시(테스트용)
+- **비차단**: 오프라인·타임아웃·비-git 모두 exit 0 + 무출력 (graceful). 네트워크 없는 환경 안전
+- **결과 처리**: advisory 출력 시 사용자에게 그대로 보고. 업데이트 적용 여부는 사용자 결정(자동 pull ❌)
+
+> forge-update-check.sh(프레임워크 전체, SessionStart)와 별개 — 이쪽은 memory-health **skill repo** 한정, `/memory-health` 기본 실행에 통합.
 
 ---
 
