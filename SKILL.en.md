@@ -31,6 +31,7 @@ Provides an Optimizer (trims MEMORY.md line count) and a Scanner (splits oversiz
 /memory-health          → Diagnose only (dry-run, no approval needed)
 /memory-health --fix    → Run Optimizer: trim MEMORY.md line count (one approval gate)
 /memory-health --scan   → Run Scanner: scan and split memory/*.md files (one approval gate)
+/memory-health catalog  → Build knowledge catalog: regenerate 3-axis metadata index (read-only)
 /memory-health --fix --json  → Output dry-run results as JSON (for automation/pipelines)
 /memory-health --with-md     → memory health + CLAUDE.md quality audit (requires claude-md-management plugin)
 ```
@@ -63,7 +64,12 @@ Output schema:
 
 ## Setup (first-time only)
 
-The `CLAUDE_MEMORY_DIR` environment variable must be set. See `install.sh` for setup instructions.
+The `CLAUDE_MEMORY_DIR` environment variable must be set. Three ways (one or more recommended):
+1. `env` field in `~/.claude/settings.json` → `"CLAUDE_MEMORY_DIR": "<abs-path>"` (injected regardless of how Claude Code is launched, dynamic reload — most robust)
+2. `~/.zshrc` → `export CLAUDE_MEMORY_DIR="<abs-path>"` (terminal/script compatible)
+3. run `install.sh` (auto-detects and persists it to `~/.zshrc`)
+
+If unset, the helper scripts (`memory-backup.sh`, `memory-health-log.sh`) no longer abort cryptically: they print the three setup options above and exit 1 gracefully (Layer 3 — no path guessing, safety first).
 
 Before using this skill for the first time, run the following to create the required files:
 ```bash
@@ -345,6 +351,47 @@ For `--fix --with-md`: Phase A `--fix` completes, then Phase B → C follows.
 
 ---
 
+## Catalog: knowledge index catalog (`catalog`)
+
+Collects **metadata** (not full content) for every MD file Claude references, plus the
+AI bulletin board (guides + task logs) and the config hierarchy, into a regenerable
+index — a map of "what lives where". Read a specific file's body on demand.
+
+### Three axes
+
+| Axis | Source | Metadata |
+|------|--------|----------|
+| ① MD files | `~/.claude` (symlink follow) · `~/workspace` · L'Atelier workspace | realpath · access_paths (symlink multi-path) · category · title (first `#`) · frontmatter description · size · mtime |
+| ② AI board | **live DB** `{board}_posts` (path resolution ★ below) | board · type (guide/tasklog) · post id·title·status·tags·dates (**no content**) |
+
+> ★ **Board live DB path (must reference this)**: the builder opens the DB with the **same resolution order** as the board server (`bulletin-board/src/db/database.js`) — `$DB_PATH` env → `~/Library/Application Support/bulletin-board/bulletin.db` (live default) → `$BB_HOME/data/bulletin.db` → `$BB_HOME/database.db` (in-repo copies, **may be stale**). The `$BB_HOME/data/bulletin.db` is a **stale secondary copy** (measured 2026-05-29: live csr 860 vs stale 368, live 31 boards vs stale 19, trader_log's 357 posts absent from stale). Always use the live path for direct sqlite queries too. Details: `feedback_bulletin-board-live-db-path.md`
+| ③ Config | CLAUDE.md · rules · rules-canonical | tagged in ① then re-aggregated as `config_hierarchy` |
+
+### Behavior
+```bash
+bash ~/.claude/skills/memory-health/scripts/catalog.sh
+```
+- Builder: `scripts/build-catalog.py` (python3). realpath de-dup (symlink = one entry),
+  no content read (head 4KB per file only), mount-graceful (skip unmounted roots + record coverage gap).
+- Output (read-only — writes only these two, under `catalog/` to stay clear of memory-health's own scan):
+  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.json` — full machine SSOT
+  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.md` — category/board summary + jq query guide (≤10K cap)
+- Idempotent: output dir excluded from scan → same input = same output.
+
+### Query (no search subcommand — query the JSON directly)
+```bash
+CAT="$CLAUDE_MEMORY_DIR/catalog/knowledge-catalog.json"
+jq -r '.md.entries[]|select(.category=="skill")|.realpath' "$CAT"
+jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "$CAT"
+```
+
+### Completion criteria
+- Valid `knowledge-catalog.json` + all three axes present + 0 duplicate realpaths
+- `knowledge-catalog.md` ≤ 10,000 chars
+- F6 entry recorded in skill-audit.log
+
+---
+
 ## Approval policy summary
 
 | Mode | Approval required | Reason |
@@ -352,6 +399,7 @@ For `--fix --with-md`: Phase A `--fix` completes, then Phase B → C follows.
 | dry-run (default) | No | Auto-approved scope (no file changes) |
 | `--fix` | Once | MEMORY.md content changes |
 | `--scan` | Once | memory/*.md content changes |
+| `catalog` | No | read-only (creates only the two catalog/ index files, originals untouched) |
 | `--fix --json` | No | Same as dry-run, exits after JSON output |
 | `--with-md` (Phase B) | No | claude-md-improver report only (no file changes) |
 | `--with-md` Phase B→edit | Once | Separate approval if claude-md-improver applies edits |

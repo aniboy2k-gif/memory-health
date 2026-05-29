@@ -13,7 +13,18 @@
 
 set -euo pipefail
 
-MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR is not set'}"
+# CLAUDE_MEMORY_DIR resolution — graceful, no path guessing (Layer 3, 2026-05-29).
+# A backup script must never guess its target dir: line ~89 runs `rm -rf` on old
+# backups, so an inferred wrong path could delete unrelated files. Fail loudly instead.
+if [ -z "${CLAUDE_MEMORY_DIR:-}" ]; then
+  echo "❌ CLAUDE_MEMORY_DIR is not set — cannot locate memory directory." >&2
+  echo "   Set it via one of:" >&2
+  echo "     1. ~/.claude/settings.json → \"env\": { \"CLAUDE_MEMORY_DIR\": \"<abs-path>\" }" >&2
+  echo "     2. ~/.zshrc                → export CLAUDE_MEMORY_DIR=\"<abs-path>\"" >&2
+  echo "     3. run the skill install.sh (auto-detects and persists it)" >&2
+  exit 1
+fi
+MEMORY_DIR="$CLAUDE_MEMORY_DIR"
 BACKUP_DIR="${MEMORY_DIR}/.backups"
 TIMESTAMP=$(date +"%Y%m%dT%H%M%S")
 

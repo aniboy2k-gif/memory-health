@@ -44,6 +44,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 /memory-health scan          → Scanner (memory/*.md 분리, 1회 승인)
 /memory-health rules         → Rules Checker (자동 로드 파일, read-only)
 /memory-health rules --strict → WARN 이상 exit 2
+/memory-health catalog       → 지식 카탈로그 빌더 (3축 메타데이터 인덱스 재생성)
 /memory-health fix --json    → dry-run JSON 출력
 /memory-health --with-md     → CLAUDE.md 품질 감사 (모든 명령 병용)
 ```
@@ -96,7 +97,12 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 
 ## 초기화 (최초 1회 실행)
 
-`CLAUDE_MEMORY_DIR` 환경변수가 설정되어 있어야 한다. 설정 방법은 `install.sh` 참조.
+`CLAUDE_MEMORY_DIR` 환경변수가 설정되어 있어야 한다. 설정 방법 3가지 (하나 이상 권장):
+1. `~/.claude/settings.json`의 `env` 필드 → `"CLAUDE_MEMORY_DIR": "<절대경로>"` (Claude Code 실행 방식 무관 주입, 동적 reload — 가장 견고)
+2. `~/.zshrc` → `export CLAUDE_MEMORY_DIR="<절대경로>"` (터미널·스크립트 호환)
+3. `install.sh` 실행 (자동 감지 후 `~/.zshrc`에 영속화)
+
+미설정 시 helper 스크립트(`memory-backup.sh`·`memory-health-log.sh`)는 크립틱 중단 대신 위 3가지 설정 안내를 출력하고 exit 1로 graceful 종료한다 (Layer 3, 경로 자동추측 없음 — 안전 우선).
 
 스킬 최초 사용 전 아래를 실행하여 필요한 파일을 사전 생성한다:
 ```bash
@@ -553,6 +559,48 @@ Phase B 완료 후 다음 안내를 출력한다:
 
 ---
 
+## Catalog: 지식 인덱스 카탈로그 (`catalog`)
+
+Claude가 참조하는 **모든 MD 파일 + AI 게시판(가이드·task log) + 설정 계층**의
+**메타데이터**(본문 아님)를 전수 수집해 재생성 가능한 인덱스로 만든다. "무엇이 어디에
+있는지"의 지도 — 특정 파일 본문은 그때그때 on-demand Read.
+
+### 수집 3축
+
+| 축 | 소스 | 수집 메타 |
+|----|------|----------|
+| ① MD 파일 | `~/.claude`(심링크 follow) · `~/workspace` · L'Atelier workspace | realpath · access_paths(심링크 다중경로) · 카테고리 · 제목(첫 #) · frontmatter description · 크기 · mtime |
+| ② AI 게시판 | **라이브 DB** `{board}_posts` (경로 해석은 ★ 아래) | 보드명 · 유형(guide/tasklog) · 게시물 id·title·status·tags·날짜 (**content 제외**) |
+
+> ★ **게시판 라이브 DB 경로 (반드시 이것을 참조)**: 빌더는 게시판 서버(`bulletin-board/src/db/database.js`)와 **동일한 해석 순서**로 DB를 연다 — `$DB_PATH` 환경변수 → `~/Library/Application Support/bulletin-board/bulletin.db` (라이브 기본값) → `$BB_HOME/data/bulletin.db` → `$BB_HOME/database.db` (in-repo 사본, **stale 가능**). **`$BB_HOME/data/bulletin.db`는 stale 보조본**이다 (실측 2026-05-29: live csr 860 vs stale 368, live 31보드 vs stale 19보드, trader_log 357건이 stale엔 부재). 직접 sqlite 조회 시에도 반드시 라이브 경로를 쓸 것. 상세: `feedback_bulletin-board-live-db-path.md`
+| ③ 설정 계층 | CLAUDE.md · rules · rules-canonical | ①에서 category 태깅 후 `config_hierarchy`로 재집계 |
+
+### 동작
+```bash
+bash ~/.claude/skills/memory-health/scripts/catalog.sh
+```
+- 빌더: `scripts/build-catalog.py` (python3). realpath 중복제거(심링크 1실체=1엔트리),
+  본문 미독(파일당 head 4KB만 — frontmatter+첫 제목), mount-graceful(미마운트 루트 skip + coverage 기록).
+- 출력 (read-only 보장 — 아래 2파일만 씀, `catalog/` 하위 = memory-health 자체 scan 대상과 분리):
+  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.json` — 전체 머신 SSOT
+  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.md` — 카테고리·보드 요약 + jq 조회 가이드 (≤10K 캡)
+- 멱등: 출력 dir 자기참조 제외 → 동일 입력 = 동일 출력.
+
+### 조회 (검색 서브명령 없음 — JSON 직접 조회)
+```bash
+CAT="$CLAUDE_MEMORY_DIR/catalog/knowledge-catalog.json"
+jq -r '.md.entries[]|select(.category=="skill")|.realpath' "$CAT"
+jq -r '.md.entries[]|select((.title//"")+(.description//"")|test("키워드";"i"))|.realpath' "$CAT"
+jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "$CAT"
+```
+
+### 완료 기준
+- `knowledge-catalog.json` 유효 + 3축 존재 + 중복 realpath 0
+- `knowledge-catalog.md` ≤10,000자
+- skill-audit.log에 F6 이력 기록
+
+---
+
 ## 승인 정책 요약
 
 | 모드 | 승인 필요 | 근거 |
@@ -561,6 +609,7 @@ Phase B 완료 후 다음 안내를 출력한다:
 | `--fix` | 1회 필요 | MEMORY.md 내용 변경 |
 | `--scan` | 1회 필요 | memory/*.md 내용 변경 |
 | `--rules` | 불필요 | read-only, 파일 변경 없음 |
+| `catalog` | 불필요 | read-only (catalog/ 인덱스 2파일만 생성, 원본 무변경) |
 | `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |
 | `--with-md` (Phase B) | 불필요 | claude-md-improver 보고만 (파일 변경 없음) |
 | `--with-md` Phase B→수정 | 1회 필요 | claude-md-improver 수정 적용 시 별도 승인 |
