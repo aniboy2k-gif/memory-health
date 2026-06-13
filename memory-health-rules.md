@@ -1,4 +1,4 @@
-# version: 1.1.0
+# version: 1.2.0
 # memory-health-rules.md — Optimizer 판단 기준 (R1~R8)
 #
 # 이 파일은 /memory-health --fix 실행 시 Optimizer가 MEMORY.md 최적화 후보를
@@ -8,6 +8,7 @@
 #
 # CSR #807 (2026-05-23): R7 자연어 포인터 우선 + R8 path-scoped rules 활용 추가.
 # 버전 1.0.0 → 1.1.0.
+# CSR #954 (2026-06-13): R9 dated 섹션 게시판 이관 권고 추가. 버전 1.1.0 → 1.2.0.
 
 ## R1: 중복 포인터 제거
 
@@ -157,10 +158,26 @@ paths:
 
 ---
 
+## R9: dated 섹션 과다 시 게시판 이관 권고 (advisory) — CSR #954
+
+> **신설**: 2026-06-13 — CSR #954. skill-feedback 파일의 dated 세션 무한 append → per-file 캡 treadmill 차단. 본 R9는 **권고(advisory)** — 자동 삭제 금지.
+
+`feedback_*.md` 파일에 dated 세션 섹션(`## YYYY-MM-DD — …` · retrospective · 게이트 신설 이력 · DA 검증 결과)이 임계치를 초과하면, 안정 패턴(규칙·Why·How·anti-pattern)과 분리하여 dated 이력을 게시판(CSR·claude_learn)으로 이관하고 feedback 에는 cross-ref 1줄만 남기도록 권고한다.
+
+**판정 기준**:
+- dated 섹션이 3개 이상 누적, 또는 파일이 per-file 토큰 캡(10,000 code points)의 80% 도달
+- dated 섹션 = 날짜 헤더(`## YYYY-MM-DD`) · "retrospective" · "게이트 신설" · "DA 검증 결과" 패턴
+
+**처리**: 후보 표시 + 사용자 확인. **게시판 박제 존재 확인(정보 손실 방지)을 선행**한 뒤 feedback 에서 cross-ref 로 축소 권고. **자동 삭제 불가** (R4 와 동일 보존 원칙).
+
+**근거**: 안정 패턴과 dated 이력의 성격 혼재가 캡 treadmill 유발 (CSR #954 실증 — csr/trader feedback 캡 초과 반복). 게시판이 dated 이력의 SSOT, feedback 은 distilled 요약.
+
+---
+
 ## 적용 순서
 
-R1(중복) → R2(만료) → R5(테이블 압축) → R3(인라인→포인터) → R4(비활성 피드백) → R7(@import → 자연어 포인터) → R8(path-scoped routing) → **R6(fingerprint 갱신)**
+R1(중복) → R2(만료) → R5(테이블 압축) → R3(인라인→포인터) → R4(비활성 피드백) → R9(dated 게시판 이관 권고) → R7(@import → 자연어 포인터) → R8(path-scoped routing) → **R6(fingerprint 갱신)**
 
-R4는 사용자 데이터 보존 위험이 있으므로 마지막 *제안* 단계 (수동 확인).
+R4·R9는 사용자 데이터 보존 위험이 있으므로 *제안* 단계 (수동 확인 — 자동 삭제 금지).
 R7·R8은 R3 후속 처리 — 인라인 → 포인터 시 destination·형식 선택 가이드.
 R6은 R1~R8 적용 후 sidecar 갱신 — 항상 마지막 단계.
