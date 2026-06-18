@@ -280,9 +280,24 @@ else
 fi
 ```
 
+**8단계 — 게시판 #32 동기화 (의무, claude_fail #81 재발 방지)**
+
+MEMORY.md를 변경했으므로 게시판 동기화 페이지(claude-docs #32, "MEMORY.md — Claude Code 동기화 페이지")도 갱신한다. **손동기화 금지** — 결정론적 생성기가 MEMORY.md에서 #32를 전체 자동 생성한다:
+
+```bash
+~/.claude/scripts/sync-memory-to-board.sh
+SYNC_EXIT=$?
+if [ "$SYNC_EXIT" -ne 0 ]; then
+  echo "⚠ #32 동기화 실패 (exit $SYNC_EXIT) — 게시판 접근 확인 후 수동 재실행 필요: ~/.claude/scripts/sync-memory-to-board.sh" >&2
+fi
+```
+
+> **이중 안전망 (defense-in-depth)**: PostToolUse hook `memory-sync-detect.sh`도 MEMORY.md 편집을 감지해 알림하나, 본 스킬은 mutation 주체이므로 **명시적으로** 동기화한다. drift 점검만 필요하면 `--check`(read-only). 패턴 상세·정직 범위(near-forcing advisory, 동시수정 best-effort): `feedback_source-derived-sync-forcing-function`.
+
 ### 완료 기준
 - MEMORY.md 줄 수 ≤ 180 (`wc -l` 검증 통과)
 - MEMORY.md 바이트 ≤ 24,500 (`wc -c` 검증 통과) — **CSR #807 신설**
+- **게시판 #32 동기화 완료** (`sync-memory-to-board.sh` exit 0, 또는 실패 시 사용자 보고) — claude_fail #81
 - skill-audit.log에 실행 이력 기록
 
 ### 주의 — 한글 다수 환경 (CSR #807 박제, S4)
@@ -529,6 +544,24 @@ bash check-rules.sh --strict
 ### 완료 기준
 - 스캔 결과 출력 완료
 - skill-audit.log에 F5 이력 기록
+
+---
+
+## 프로젝트 CLAUDE.md(+분리 파일) 크기 모니터링 (READ-ONLY)
+
+사용자 MEMORY.md(Optimizer 대상)와 별개로, **외부 프로젝트 CLAUDE.md와 그 분리 파일**(예: aria·kr-ai-trader)의 크기를 점검·경고한다. **읽기 전용 — 파일을 수정하지 않는다.** 실제 내용 최적화는 해당 도메인 워크플로우(ARIA/KRIS = `/trader-task`)로 수행한다 (MEMORY.md 캡은 개인 메모리용이라 프로젝트 문서에 부적합 + 도메인·foreign repo 경계).
+
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
+```
+
+- **대상 목록**(우선순위): `--list=<경로>` > `$CLAUDE_PROJECT_CLAUDEMD_LIST` > `~/.claude/da-tools/project-claudemd-paths.txt` (한 줄 = 절대경로 **또는 glob 패턴**, `#`·빈 줄 무시)
+- **분리 파일 자동 포함**: 목록에 glob 패턴(예: `.../aria/CLAUDE*.md`)을 쓰면, 향후 CLAUDE.md를 분리(`CLAUDE-part2.md` 등)해도 **분리 파일이 자동으로 점검 대상에 포함**된다(realpath dedup). 도메인 워크플로우(`/trader-task`)가 분리 산출 시 별도 등록 불필요.
+- **임계(자 수, Rules Checker 정합)**: OK<20,000 / WARN 20,000~40,000 / CRITICAL>40,000 (env `CLAUDE_PROJECT_MD_WARN`·`CLAUDE_PROJECT_MD_CRITICAL`)
+- **graceful**: 목록 없음·볼륨 미마운트·매칭 0 = skip/경고 + exit 0 (비차단). `--strict` 시 WARN+ → exit 2 (CI용)
+- **통합**: `/memory-health check` 기본 실행과 `--rules`에 포함 권장. CRITICAL 발견 시 사용자에 보고하되 **자동 수정 금지** — 도메인 워크플로우 안내만.
+
+> 신설 근거(2026-06-13): aria/CLAUDE.md(37.5K자 WARN)·kr-ai-trader/CLAUDE.md(20.4K자 WARN)가 memory-health 크기 관리에서 누락되어 있었음(사용자 (가)안 선택). Optimizer는 MEMORY.md 전용이므로 별도 read-only 모니터로 보강. glob 패턴으로 분리 파일 자동 포함(사용자 추가 요청). 내용 축소는 `/trader-task`.
 
 ---
 

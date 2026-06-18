@@ -161,8 +161,23 @@ else
 fi
 ```
 
+**Step 8 — Sync board #32 (mandatory, prevents recurrence of claude_fail #81)**
+
+MEMORY.md was modified, so the board sync page (claude-docs #32, "MEMORY.md — Claude Code 동기화 페이지") must be updated too. **No hand-syncing** — a deterministic generator regenerates #32 from MEMORY.md:
+
+```bash
+~/.claude/scripts/sync-memory-to-board.sh
+SYNC_EXIT=$?
+if [ "$SYNC_EXIT" -ne 0 ]; then
+  echo "⚠ #32 sync failed (exit $SYNC_EXIT) — verify board access and re-run manually: ~/.claude/scripts/sync-memory-to-board.sh" >&2
+fi
+```
+
+> **Defense-in-depth**: the PostToolUse hook `memory-sync-detect.sh` also reminds on MEMORY.md edits, but this skill is the mutation author so it syncs explicitly. Use `--check` for read-only drift detection. Pattern + honest scope: `feedback_source-derived-sync-forcing-function`.
+
 ### Completion criteria
 - MEMORY.md line count ≤ 180 (verified with `wc -l`)
+- **Board #32 synced** (`sync-memory-to-board.sh` exit 0, or reported to user on failure) — claude_fail #81
 - Execution history recorded in skill-audit.log
 
 ---
@@ -300,6 +315,24 @@ Audit log scope:
 
 Candidate identification rules are loaded from `memory/memory-health-rules.md` via the Read tool.
 No ad-hoc judgment — never select candidates using criteria not in the rules file.
+
+---
+
+## Project CLAUDE.md (+ split files) size monitoring (READ-ONLY)
+
+Separate from the user MEMORY.md (the Optimizer's target), this monitors the size of **external project CLAUDE.md files and their split children** (e.g. aria, kr-ai-trader). **Read-only — it never modifies files.** Actual content optimization goes through the domain workflow (ARIA/KRIS = `/trader-task`), since MEMORY.md's caps are for personal memory and don't fit project docs (plus domain / foreign-repo boundaries).
+
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
+```
+
+- **Target list** (priority): `--list=<path>` > `$CLAUDE_PROJECT_CLAUDEMD_LIST` > `~/.claude/da-tools/project-claudemd-paths.txt` (one absolute path **or glob pattern** per line; `#`/blank lines ignored)
+- **Split files auto-included**: if the list uses a glob (e.g. `.../aria/CLAUDE*.md`), then when CLAUDE.md is later split (`CLAUDE-part2.md`, etc.) the **split files are automatically picked up** (realpath dedup). No manual re-registration needed when `/trader-task` produces splits.
+- **Thresholds (chars, aligned with Rules Checker)**: OK<20,000 / WARN 20,000–40,000 / CRITICAL>40,000 (env `CLAUDE_PROJECT_MD_WARN`/`CLAUDE_PROJECT_MD_CRITICAL`)
+- **Graceful**: missing list / unmounted volume / zero matches = skip + exit 0 (non-blocking). `--strict` → exit 2 on WARN+ (for CI).
+- **Integration**: recommended in `/memory-health check` (default) and `--rules`. On CRITICAL, report to the user but **never auto-edit** — only point to the domain workflow.
+
+> Added 2026-06-13: aria/CLAUDE.md (37.5K chars WARN) and kr-ai-trader/CLAUDE.md (20.4K chars WARN) were outside memory-health's size management (user chose option (가)). The Optimizer is MEMORY.md-only, so this read-only monitor backfills it; glob patterns auto-include split files (user follow-up). Content reduction stays in `/trader-task`.
 
 ---
 
