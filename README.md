@@ -25,7 +25,12 @@ Some Claude Code users build a **custom auto-memory system** — a setup where C
 
 **The problem**: Once `MEMORY.md` exceeds 200 lines, everything past line 200 is silently dropped. You won't get an error — Claude just won't remember things it used to know. By the time you notice, the context is already gone.
 
-**How to tell if this applies to you**: If `~/.claude/hooks/memory-line-check.sh` exists in your setup and MEMORY.md is triggering ≥180-line warnings, this skill is for you.
+**How to tell if this applies to you**: If `~/.claude/hooks/memory-line-check.sh` exists in your setup and MEMORY.md is triggering warnings (≥160 lines or ≥20,000 characters), this skill is for you.
+
+> ★ **CSR #1825 (2026-08-10)**: the platform cap is **200 lines OR 25,000 characters (UTF-16 code units)** —
+> **not bytes**. Behavioral probe: 24,899 chars load / 25,099 chars truncate; 10,734 chars at **31,534 bytes**
+> load in full. Korean inflates bytes only — it does *not* bring the file closer to the cap.
+> Never judge with `wc -c`. Re-verify with `tests/cap-boundary-probe.sh` (behavioral), not `strings`.
 
 If you're using Claude Code's built-in memory features rather than a custom file-based system, this skill doesn't apply.
 
@@ -36,7 +41,7 @@ If you're using Claude Code's built-in memory features rather than a custom file
 | Constraint | Type | Value | Source |
 |-----------|------|-------|--------|
 | MEMORY.md line cutoff | **Hard limit** | 200 lines | Context injection mechanism design |
-| MEMORY.md safety target | Safety margin | 180 lines | 200 − 20-line buffer (aligns with hook warning threshold) |
+| MEMORY.md safety target | Safety margin | 140 lines / 17,500 chars | cap × 0.7 (our choice, not a platform guarantee) |
 | memory/*.md size threshold | **Empirical** | 5,000 chars | Observed context crowding in practice |
 
 Content beyond line 200 of `MEMORY.md` is **silently not loaded** by the context injector. By the time you notice the problem, valuable memory is already gone.
@@ -91,7 +96,7 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 | Feature | Flag | File changes? | What it does |
 |---------|------|:-------------:|--------------|
 | Diagnose | *(default)* | No | Dry-run: reports current line/char counts |
-| Optimizer | `--fix` | **Yes** | Trims MEMORY.md to ≤ 180 lines (approval gate required) |
+| Optimizer | `--fix` | **Yes** | Trims MEMORY.md to ≤ 140 lines / ≤ 17,500 characters (approval gate required) |
 | Scanner | `--scan` | **Yes** | Finds `memory/*.md` > 5,000 chars; splits into `*-part2.md` (approval gate required) |
 | JSON output | `--fix --json` | No | Dry-run results as JSON (pipeline/automation); exits after stage 3, no file changes |
 
@@ -117,15 +122,15 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 
 7-stage pipeline with hard stops (points where a failure blocks the next stage):
 
-1. **Diagnose** — measure current line and byte count
+1. **Diagnose** — measure current line and **character** count (UTF-16 code units; bytes are diagnostic only)
 2. **Analyze** — load R1–R5 rules from `memory-health-rules.md`; no ad-hoc judgment
 3. **Propose** — show candidate changes and projected line count (dry-run, read-only preview) — *`--json` flag exits here, outputting results as JSON with no further stages executed*
 4. **Approve** — you'll need to confirm explicitly before anything changes
 5. **Backup** — `memory-backup.sh` runs automatically; if the backup fails, the whole operation stops here
 6. **Execute** — apply approved changes to MEMORY.md
-7. **Verify** — assert `wc -l ≤ 180`; log to `skill-audit.log`
+7. **Verify** — assert lines ≤ 140 and characters ≤ 17,500; log to `skill-audit.log`
 
-**Done when**: `wc -l MEMORY.md ≤ 180` + audit log entry recorded (stages 1–7 completed successfully).
+**Done when**: lines ≤ 140 **and** characters ≤ 17,500 + audit log entry recorded (stages 1–7 completed successfully).
 
 ### Scanner (`--scan`): memory/*.md Size Manager
 
@@ -200,7 +205,7 @@ The log path is controlled by the `$CLAUDE_MEMORY_DIR` environment variable in `
 
 # External dependencies (not in this repo):
 ~/.claude/hooks/
-├── memory-line-check.sh              # Watch hook: warns when MEMORY.md >= 180 lines
+├── memory-line-check.sh              # Implementation: warns at >= 160 lines or >= 20,000 chars
 └── memory-backup.sh                  # Backup hook: hard stop gate for --fix
 
 ${CLAUDE_MEMORY_DIR}/
