@@ -28,11 +28,16 @@
 | **위치** | `~/.claude/hooks/memory-line-check.sh` (Claude Code hook으로 등록) |
 | **실행 조건** | Claude Code 세션 시작 시 자동 실행 (hook) |
 | **입력** | 없음 (CLAUDE_MEMORY_DIR 환경변수 읽기) |
-| **환경변수 (선택)** | `CLAUDE_MEMORY_LINE_WARN` (기본 180) · `CLAUDE_MEMORY_BYTE_WARN` (기본 24500) |
-| **성공 출력** | stdout: `⚠ MEMORY.md lines={n} (≥180) bytes={m} (≥24500) — run /memory-health --fix [— Korean ratio {p}% ...]` (둘 중 하나 이상이 임계값 도달 시) |
+| **구조 (CSR #1825)** | `hooks/memory-line-check.sh` = **shim**(이벤트 채널 계약 + 위임 + 구현 부재 고발, 정책 없음) → `scripts/memory-line-check.sh` = **구현**(대상·측정·임계·평문 출력). 구현은 **JSON 을 만들지 않는다** |
+| **임계 SSOT** | `cap-constants.env` (source 금지 — `grep '^KEY=' \| head -1 \| cut -d= -f2`, 정수 아니면 내장 기본값 폴백) |
+| **환경변수 (선택)** | `CLAUDE_MEMORY_DIR`(필수 — 없으면 `MEMORY_DIR_UNSET` 고발) · `CLAUDE_MEMORY_LINE_WARN` (기본 160) · `CLAUDE_MEMORY_CHAR_WARN` (기본 20000) · `MEMORY_HEALTH_IMPL` · `MEMORY_HEALTH_CONSTANTS` |
+| **성공 출력** | stdout 평문: `MEMORY_WARN: MEMORY.md 문자 {c}/25000 · 줄 {n}/200 (참고 {b}B) — …` + `  측정 대상: {경로}` (INV-3). 하드캡 시 `MEMORY_HARDCAP:` |
+| **측정 단위** | ★ **문자(UTF-16 code unit)**. 바이트 아님 — 바이트는 참고 표시 전용이며 판정에 쓰지 않는다 |
+| **대상 결박** | `$CLAUDE_MEMORY_DIR/MEMORY.md` **고정**. ★ `find … \| head -1` 폴백 **영구 금지**(열거 순서 의존 → 대상이 조용히 바뀜, CSR #1825 실증) |
 | **부작용** | **없음** — 경고 출력만, 파일 변경 절대 금지 |
 | **exit 코드** | 0 (항상. 경고가 있어도 hook을 차단하지 않음) |
-| **변경 이력** | CSR #807 (2026-05-23): 바이트 캡 + 한글 비율 추가. 25 KB Anthropic Auto Memory cap 대응 |
+| **자기무력화 고발** | `MEMORY_DIR_UNSET` · `MEMORY_FILE_ABSENT` · `MEASURE_FAILED` · `MEMORY_IMPL_ABSENT` — 전부 **SessionStart 한정**(Stop 은 턴마다 발화하므로 소음) |
+| **변경 이력** | CSR #807 (2026-05-23): 바이트 캡 + 한글 비율 추가 — ★ **CSR #1825 (2026-08-10) 에서 전제가 반증됨**(캡은 바이트가 아님). CSR #1825: 단위를 문자로 정정 + shim/구현 분리 + 대상 결박 수정 |
 
 ---
 

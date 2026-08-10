@@ -203,8 +203,8 @@ CLAUDE.md가 없는 경우:
 ## Optimizer: MEMORY.md 줄 수 최적화 (`--fix`)
 
 ### 전제 조건
-- hook(memory-line-check.sh)이 **≥ 180줄 또는 ≥ 24,500 bytes** 경고를 발생시킨 경우에 실행 권장
-- 한글 비율 14%+ 환경에서는 **바이트가 줄 수보다 먼저 캡 도달** (CSR #806 입증). 줄 수만 추적 시 silent truncation 위험
+- hook(memory-line-check.sh)이 **≥ 160줄 또는 ≥ 20,000문자** 경고를 발생시킨 경우에 실행 권장 (CSR #1825: 단위=문자)
+- ★ 구 서술 "한글 비율 14%+ 면 바이트가 먼저 캡 도달"(CSR #806)은 **CSR #1825 행동실측으로 반증**됐다 — 캡 단위는 문자이며 한글은 캡에서 오히려 여유를 준다. 판정은 **문자·줄** 두 축으로만 한다
 - MEMORY.md는 Scanner(`--scan`) 스캔 대상에서 제외 (이 파일만 Optimizer 적용)
 
 ### 실행 단계 (7단계)
@@ -263,20 +263,23 @@ Scanner 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
 
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
-BYTES=$(wc -c < "${MEMORY_DIR}/MEMORY.md")
+# ★ 판정 축은 문자(UTF-16 code unit)다. 바이트가 아니다 (CSR #1825 행동실측).
+CHARS=$(MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
+t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
+print(sum(2 if ord(c)>0xFFFF else 1 for c in t))')
 
 LINE_FAIL=0
-BYTE_FAIL=0
-[ "$LINES" -gt 180 ] && LINE_FAIL=1
-[ "$BYTES" -gt 24500 ] && BYTE_FAIL=1
+CHAR_FAIL=0
+[ "$LINES" -gt 140 ] && LINE_FAIL=1
+[ "$CHARS" -gt 17500 ] && CHAR_FAIL=1
 
-if [ "$LINE_FAIL" -eq 1 ] || [ "$BYTE_FAIL" -eq 1 ]; then
-  echo "⚠ Verification failed: lines=${LINES}/180 bytes=${BYTES}/24500. Further optimization needed." >&2
+if [ "$LINE_FAIL" -eq 1 ] || [ "$CHAR_FAIL" -eq 1 ]; then
+  echo "⚠ Verification failed: lines=${LINES}/140 chars=${CHARS}/17500. Further optimization needed." >&2
 else
-  echo "✅ Verification passed: lines=${LINES}/180 bytes=${BYTES}/24500"
-  # 200줄·25KB cap 대비 20줄·1100바이트 안전 마진 (hook 경고 임계값과 일치)
+  echo "✅ Verification passed: lines=${LINES}/140 chars=${CHARS}/17500"
+  # 200줄·25,000문자 cap 대비 cap×0.7 목표선 (우리 선택 — 플랫폼 권위 아님)
   ~/.claude/skills/memory-health/scripts/memory-health-log.sh \
-    "F3" "MEMORY.md 최적화" "${BEFORE}줄" "${LINES}줄/${BYTES}바이트"
+    "F3" "MEMORY.md 최적화" "${BEFORE}줄" "${LINES}줄/${CHARS}문자"
 fi
 ```
 
@@ -295,14 +298,30 @@ fi
 > **이중 안전망 (defense-in-depth)**: PostToolUse hook `memory-sync-detect.sh`도 MEMORY.md 편집을 감지해 알림하나, 본 스킬은 mutation 주체이므로 **명시적으로** 동기화한다. drift 점검만 필요하면 `--check`(read-only). 패턴 상세·정직 범위(near-forcing advisory, 동시수정 best-effort): `feedback_source-derived-sync-forcing-function`.
 
 ### 완료 기준
-- MEMORY.md 줄 수 ≤ 180 (`wc -l` 검증 통과)
-- MEMORY.md 바이트 ≤ 24,500 (`wc -c` 검증 통과) — **CSR #807 신설**
+- MEMORY.md 줄 수 ≤ 140 (`wc -l` 검증 통과)
+- MEMORY.md **문자 ≤ 17,500** (UTF-16 code unit) — ★ CSR #1825: `wc -c` 바이트 판정은 **폐기**(한글에서 거짓 경고)
 - **게시판 #32 동기화 완료** (`sync-memory-to-board.sh` exit 0, 또는 실패 시 사용자 보고) — claude_fail #81
 - skill-audit.log에 실행 이력 기록
 
-### 주의 — 한글 다수 환경 (CSR #807 박제, S4)
-한국어는 영문 대비 1.3~1.5배 토큰을 소비하므로 한글 비율 14%+ 환경에서는 **줄 수보다 바이트가 먼저 25KB 캡 도달**한다.
-줄 수만 추적할 경우 25KB 캡 초과 silent truncation 발생 가능 (CSR #806 실증: 193줄 = 25,849 bytes = 캡 249 bytes 초과 상태에서 자동 로드 일부 truncate 위험). 줄 수와 바이트 동시 추적 필수.
+### ★ 주의 — 한글 다수 환경 (CSR #807 전제가 **CSR #1825 에서 반증됨**)
+
+**구 서술(폐기)**: "한글 비율 14%+ 환경에서는 줄 수보다 바이트가 먼저 25KB 캡에 도달한다."
+
+**실제(행동실측, CSR #1825 · 2026-08-10)**: 캡의 단위는 **바이트가 아니라 문자(UTF-16 code unit)** 다.
+
+| 관측 | 결과 |
+|---|---|
+| 24,899자 (74,353B) | 전문 로드 |
+| 25,099자 (74,951B) | **꼬리 절단** |
+| 10,734자 (31,534**B**) | 전문 로드 — **바이트 캡 없음** |
+| 302줄 (16,534자) | 절단 — 줄 캡 200 독립 실재 |
+| 12,909 code point / 25,409 UTF-16단위 | **절단** — 단위는 UTF-16 code unit |
+
+⇒ **한글은 바이트만 부풀릴 뿐 실제 캡에서는 오히려 여유를 준다.** 같은 의미를 한국어가 영어보다
+적은 문자로 표현하므로, 문자 캡 아래에서는 **한글이 불리하지 않다**(번역을 캡 압박으로 정당화할 수 없다).
+
+⚠ `wc -c` 로 판정하지 말 것 — 한글에서 3배로 부풀어 **거짓 경고**가 난다(실제로 2026-08-10 까지 발생 중이었다).
+재검증 = `tests/cap-boundary-probe.sh` (행동 프로브). `strings` 재실측은 판별력이 없다 — 같은 축이기 때문이다.
 
 ---
 
@@ -680,5 +699,6 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 | 일자 | 변경 |
 |------|------|
+| 2026-08-10 | ★ **CSR #1825 — 캡의 단위가 바이트가 아니라 문자임을 행동실측으로 확정. CSR #807/#806 전제 반증**. 카나리아 8케이스: 24,899자 로드 / 25,099자 절단(경계 25,000문자) · 10,734자·31,534**바이트** 전문 로드(바이트 캡 없음) · 302줄 절단(줄 캡 200 독립) · code point 12,909 / UTF-16 25,409 절단(단위=UTF-16 code unit). 결과: 임계를 문자 체계(25,000/20,000/17,500)와 줄 체계(200/160/140)로 교체, `wc -c` 판정 폐기. 훅을 **A-7(안정 shim + 단일 구현)** 로 재설계 — 배선본은 정책을 담지 않고 이벤트 채널 계약·위임·부재 고발만 한다. `find \| head -1` 대상 결박 폐지(비결정성 실증), 대상 경로 stdout 출력(INV-3), 자기무력화 고발 SessionStart 한정. `cap-constants.env` SSOT(source 금지) + `tests/cap-boundary-probe.sh` 행동 재검증. da_verification=776(Tier 1 · Conditional Y · CRITICAL 0). |
 | 2026-05-23 | **CSR #807 — 25KB 바이트 캡 + 한글 비율 모니터링 + R7~R8 룰 추가**. memory-line-check.sh에 BYTE_COUNT + 한글 비율 측정 추가 (`CLAUDE_MEMORY_BYTE_WARN=24500` env 지원). memory-health-rules.md R7 자연어 포인터 우선 + R8 path-scoped rules 활용 신설. SKILL.md 7단계 검증을 줄 수 + 바이트 동시 검증으로 확장. rule_version 1.0.0 → 1.1.0. 한글 14%+ 환경 byte cap silent truncation 주의 박제. 근거: CSR #806 (193줄 = 25,849 bytes = 캡 249 bytes 초과 실증) + Anthropic 공식 문서 RAG (ChatGPT·Claude Web 강한 합의). |
 | 2026-05-19 | CSR #656·#658·#659·#671·#779 — R6 Sidecar Fingerprint + 재설계 Phase C·D 시리즈. |
