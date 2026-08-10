@@ -55,7 +55,7 @@ Output schema:
 {
   "status": "ok | needs_action",
   "current_lines": 0,
-  "target_lines": 180,
+  "target_lines": 140,
   "candidates": [
     { "section": "<header>", "current_lines": 0, "savings": 0 }
   ]
@@ -94,7 +94,10 @@ The hook only prints warnings. Actual edits are handled by this skill.
 ## Optimizer: Trim MEMORY.md line count (`--fix`)
 
 ### Prerequisites
-- Recommended when the hook (memory-line-check.sh) has triggered a ≥ 180-line warning
+- Recommended when the hook (memory-line-check.sh) has triggered a warning (≥ 160 lines or ≥ 20,000 characters)
+- ★ CSR #1825: the platform cap is **200 lines OR 25,000 characters (UTF-16 code units)** — **not bytes**.
+  Behavioral probe: 24,899 chars load / 25,099 chars truncate; 10,734 chars at 31,534 **bytes** load fully.
+  Korean inflates bytes only — it does **not** bring the file closer to the cap. Never judge with `wc -c`.
 - MEMORY.md is excluded from the Scanner (`--scan`) — only the Optimizer applies to it
 
 ### Steps (7 steps)
@@ -152,10 +155,10 @@ No shared state (global variables, file locks) with the Scanner handler.
 **Step 7 — Verify (mandatory)**
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
-if [ "$LINES" -gt 180 ]; then
-  echo "⚠ Verification failed: ${LINES} lines (target ≤ 180). Further optimization needed." >&2
+if [ "$LINES" -gt 140 ]; then
+  echo "⚠ Verification failed: ${LINES} lines (target ≤ 140). Further optimization needed." >&2
 else
-  echo "✅ Verification passed: ${LINES} lines (target ≤ 180)"
+  echo "✅ Verification passed: ${LINES} lines (target ≤ 140)"
   ~/.claude/skills/memory-health/scripts/memory-health-log.sh \
     "F3" "MEMORY.md optimized" "${BEFORE} lines" "${LINES} lines"
 fi
@@ -176,7 +179,7 @@ fi
 > **Defense-in-depth**: the PostToolUse hook `memory-sync-detect.sh` also reminds on MEMORY.md edits, but this skill is the mutation author so it syncs explicitly. Use `--check` for read-only drift detection. Pattern + honest scope: `feedback_source-derived-sync-forcing-function`.
 
 ### Completion criteria
-- MEMORY.md line count ≤ 180 (verified with `wc -l`)
+- MEMORY.md line count ≤ 140 and character count ≤ 17,500 (UTF-16 code units — **not** `wc -c` bytes)
 - **Board #32 synced** (`sync-memory-to-board.sh` exit 0, or reported to user on failure) — claude_fail #81
 - Execution history recorded in skill-audit.log
 
