@@ -110,6 +110,23 @@ if [ "$CHAR_OK" -eq 1 ] && [ "$CHARS" -ge "$CHAR_CAP" ]; then HARD=1; fi
 if [ "$LINES" -ge "$LINE_WARN" ]; then WARN=1; fi
 if [ "$CHAR_OK" -eq 1 ] && [ "$CHARS" -ge "$CHAR_WARN" ]; then WARN=1; fi
 
+# ---- 자동로드 예산 floor 표면화 (CSR #2262 Action 1) ------------------------
+# ★★ 이 블록은 **반드시 아래 조기 종료보다 위**에 있어야 한다.
+#   MEMORY.md 가 건강하면(오늘의 상태) 바로 아래 `exit 0` 이 발동해 이 파일은 아무것도
+#   인쇄하지 않는다. floor 표면화를 그 뒤에 두면 **아무것도 표면화하지 않는 표면화**가 된다 —
+#   이 티켓이 기소하는 바로 그 형태(계산은 되는데 수신자가 없다)를 한 함수 아래에서 재현한다.
+#   floor 축과 MEMORY.md 축은 서로 다른 대상이므로 판정도 서로 독립이어야 한다.
+#
+# ★ 새 hook 이 아니다. `settings.json` 은 건드리지 않았다(16번째 hook 신설 아님) —
+#   이미 등록·작동 중인 이 SessionStart 채널에 한 줄을 얹은 것이다.
+# ★ 출력은 **정확히 한 줄**(정본 §10.4). 게이트를 인라인 재실행하지 않는다.
+# ★ 실패는 전부 흡수한다 — 예산 표면화가 SessionStart 를 막아서는 안 된다.
+_CCS_SURFACE="${CCS_FLOOR_SURFACE:-${SCRIPT_DIR}/ccs-floor-surface.sh}"
+if [ "${CCS_FLOOR_SURFACE_OFF:-0}" != "1" ] && [ -r "$_CCS_SURFACE" ]; then
+  _CCS_LINE="$(bash "$_CCS_SURFACE" 2>/dev/null | head -1)"
+  [ -n "$_CCS_LINE" ] && printf '%s\n' "$_CCS_LINE"
+fi
+
 if [ "$HARD" -eq 0 ] && [ "$WARN" -eq 0 ]; then
   exit 0
 fi
