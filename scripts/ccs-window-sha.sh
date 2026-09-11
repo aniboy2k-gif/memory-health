@@ -22,7 +22,18 @@
 #
 # 사용: zsh ccs-window-sha.sh {composition|metric|both}
 # 종료: 0 성공 · 3 측정 불가(빈 열거 · 게이트 부재 · 게이트 토크나이저 앵커 부재 ·
-#       모듈 판독 불가 · `CCS_TOKENIZER` 불일치) — 조용히 빈 값을 내지 않는다
+#       모듈 판독 불가 · `CCS_TOKENIZER` 불일치 · **모듈 해싱 실패/부적격**(`tokenizer_hash_failed`) ·
+#       **지문 해싱 실패/부적격**(`metric_hash_failed`)) — 조용히 빈 값을 내지 않는다
+#   ★ 뒤 둘은 CSR #2288 에서 추가됐다. 그 전까지 `_metric` 의 두 다이제스트 지점은 실패를
+#     전파하지 않았다(파이프라인 rc 는 최우측 명령의 것 — zsh PIPE_FAIL 기본 off).
+#   ★ 범위 경고 — 이 열거는 `_metric` 에 대해서만 완전하다. `_composition()` 의 `shasum` 실패는
+#     **여전히 rc 를 전파하지 않아** 이 목록에 없다(CSR #2288 범위 밖).
+#     이 주석을 "스크립트 전체의 rc 3 전건"으로 읽지 말 것 — 그렇게 읽으면 이 주석 자신이
+#     이 티켓이 고치는 부류의 거짓 문장이 된다.
+#   ★ 위 `사용:`·`종료:` 두 줄은 `count` 서브커맨드와 rc 2(미지원 인자)를 빠뜨린다 — **기존 결함이며
+#     이 티켓 범위 밖**이다. 완전하다고 읽지 말 것. (고치지 않고 이름만 댄다: 이 변경과 무관하다.)
+#   ★ 이 파일의 주석에는 **줄번호를 쓰지 않는다**. 줄번호는 다음 편집 한 번에 조용히 거짓이 되고,
+#     그것이 바로 이 티켓의 결함이다. 함수명·`reason=` 토큰으로 가리킨다.
 set -u
 
 if [ -z "${ZSH_VERSION:-}" ]; then
@@ -59,9 +70,17 @@ _composition() {
   print -rl -- ${(o)paths} | shasum -a 256 | cut -d' ' -f1
 }
 
+# ★ `case` 형태를 의도적으로 쓴다 — zsh 글롭 `[[ $1 == [0-9a-f](#c64) ]]` 는
+#   `setopt extended_glob`(파일 전역 옵션 변경)을 요구한다. 1차 출처(zsh 매뉴얼 zshexpn):
+#   "There are various flags which affect any text to their right … they require the
+#   EXTENDED_GLOB option." 두 형태는 5종 입력에서 동일하다(실측).
+_is_sha256() { case "$1" in (*[!0-9a-f]*) return 1;; esac; [ ${#1} -eq 64 ] }
+
 _metric() {
   # 게이트 소스에서 측정 의미론을 뽑고, 거기에 **공유 모듈 전체의 sha256** 을 더해 해싱한다.
-  local _tok_body _mod_sha
+  # ★ `local` 과 대입을 **분리**해야 한다 — `local v="$(cmd)"` 는 `local` 의 rc 를 주므로
+  #   아래 rc 포착이 통째로 무효가 된다(실측: 합친 형태 rc=0 / 분리 형태 rc=5).
+  local _tok_body _mod_sha _sha_out _out _rc
   # 게이트 안 토크나이저 정의부. D1 이후 앵커(`_load_tokenizer`)를 먼저, 그 다음 D1 이전 앵커(`_tokens`).
   # ★ 이전 주석("없으면 그 사실 자체가 지문에 들어간다")은 **거짓이었다** — 실측상 패턴이 없으면
   #   awk 출력이 0바이트라 지문이 상수부만으로 조용히 줄어든다. 그래서 이제 **둘 다 없으면 멈춘다**.
@@ -75,13 +94,40 @@ _metric() {
     echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_unreadable path=$_TOKENIZER_DERIVED" >&2
     return 3
   fi
-  _mod_sha="$(shasum -a 256 "$_TOKENIZER_DERIVED" | cut -d' ' -f1)" || return 3
-  {
+  # ★ 파이프를 없앴다 — 생산자 rc 를 직접 본다(canon-A 조건 2 의 "pipeline safety" 절반).
+  #   1차 출처(zsh 매뉴얼 Options/PIPE_FAIL, 기본 off): "the exit status … reflects that of the
+  #   rightmost element of a pipeline" — 그래서 `"$(shasum … | cut …)" || return 3` 은 발동하지 않는다.
+  _sha_out="$(shasum -a 256 "$_TOKENIZER_DERIVED")"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_hash_failed path=$_TOKENIZER_DERIVED rc=$_rc" >&2
+    return 3
+  fi
+  _mod_sha="${_sha_out%% *}"          # `cut -d' ' -f1` 과 동일 바이트
+  if ! _is_sha256 "$_mod_sha"; then   # ★ "hash validation" 절반 — rc 포착으로는 못 잡는다
+    echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_hash_failed path=$_TOKENIZER_DERIVED" >&2
+    return 3
+  fi
+  # ★ `pipefail` 은 치환 서브셸 안에만 건다 — 파일 전역 옵션이 아니므로 `_composition` 에 닿지 않는다
+  #   (POSIX: 치환은 서브셸 환경에서 실행되고 "shall not remain in effect after the list finishes";
+  #    실측: 안 rc=1 / 밖 rc=0 / 부모 옵션 미오염).
+  #   파이프를 그대로 두는 이유: shasum 에 들어가는 바이트열이 변하면 metric_sha 가 회전해
+  #   살아 있는 핀이 무효화된다(#2273 본문). 입력 스트림은 한 바이트도 건드리지 않는다.
+  _sha_out="$( set -o pipefail; {
     grep -E '^(PER_FILE_CAP_TOKENS|TOTAL_HARD_TOKENS|TOTAL_SOFT_TOKENS)=' "$GATE"
     grep -E '^(KO_THRESHOLD|KO_FACTOR_HARD|EN_FACTOR_HARD)=' "$GATE"
     print -r -- "$_tok_body"
     print -r -- "$_mod_sha"          # ← (b): 공유 모듈 **전체**가 지문 안으로
-  } | shasum -a 256 | cut -d' ' -f1
+  } | shasum -a 256 )"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    echo "CCS_METRIC_UNAVAILABLE reason=metric_hash_failed rc=$_rc" >&2
+    return 3
+  fi
+  _out="${_sha_out%% *}"
+  if ! _is_sha256 "$_out"; then
+    echo "CCS_METRIC_UNAVAILABLE reason=metric_hash_failed" >&2
+    return 3
+  fi
+  print -r -- "$_out"
 }
 
 case "${1:-both}" in
