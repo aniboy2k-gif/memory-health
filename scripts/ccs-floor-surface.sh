@@ -125,6 +125,11 @@ SID_SRC="env"
 WINDOW_ID=""
 SESSION_COUNT=""
 PIN_NOTE=""
+# CSR #2273 ③: 생산측(`_metric`) 이 rc≠0 로 죽었을 때의 사유를 담는다.
+# ★ `set -u` 가 이 파일에서 무조건 켜져 있다(:39). 이 파일의 계약은 "항상 exit 0,
+#   SessionStart 를 절대 막지 않는다"(:37) 이므로 미정의 변수 중단은 **조용한 계약 위반**이
+#   된다 — 그래서 초기화와 `${_MSHA_UNAVAIL:-}` 참조가 **둘 다** 의무다.
+_MSHA_UNAVAIL=""
 CLOSE_NOTE=""
 
 if [ -r "$PIN" ]; then
@@ -187,7 +192,13 @@ SHA_SH="${CCS_WINDOW_SHA_SH:-$_SELF_DIR/ccs-window-sha.sh}"
 REFERENCE=""; REF_LEG=3; REF_STALE=1; REF_REASON="pin_absent"
 if [ -r "$PIN" ] && [ -r "$RESOLVER" ] && [ -n "$FLOOR" ]; then
   _CSHA="$(zsh "$SHA_SH" composition 2>/dev/null)" || _CSHA=""
-  _MSHA="$(zsh "$SHA_SH" metric 2>/dev/null)" || _MSHA=""
+  _MSHA="$(zsh "$SHA_SH" metric 2>/dev/null)"; _MSHA_RC=$?
+  if [ "$_MSHA_RC" -ne 0 ]; then
+    _MSHA=""
+    _MSHA_UNAVAIL="$(zsh "$SHA_SH" metric 2>&1 1>/dev/null \
+      | sed -n 's/^CCS_METRIC_UNAVAILABLE reason=\([a-z_][a-z_]*\).*/\1/p' | head -1)"
+    [ -n "$_MSHA_UNAVAIL" ] || _MSHA_UNAVAIL="rc_${_MSHA_RC}"
+  fi
   _RES="$(python3 "$RESOLVER" "$PIN" "$FLOOR" "$FLOOR_HARD_CAP" \
             "$_CSHA" "$_MSHA" "$SESSIONS_ROOT" 2>/dev/null)" || _RES=""
   if [ -n "$_RES" ]; then
@@ -195,7 +206,13 @@ if [ -r "$PIN" ] && [ -r "$RESOLVER" ] && [ -n "$FLOOR" ]; then
     REF_LEG="${_r%%|*}";     _r="${_r#*|}"
     REF_STALE="${_r%%|*}";   REF_REASON="${_r#*|}"
     # leg 3 은 "참조가 current_floor 로 떨어졌다" 는 뜻이다 — 화면에는 그 사실을 보인다.
-    [ "$REF_LEG" = "3" ] && PIN_NOTE="${PIN_NOTE:+$PIN_NOTE }ref_stale=${REF_REASON:-unknown}"
+    if [ "$REF_LEG" = "3" ]; then
+      PIN_NOTE="${PIN_NOTE:+$PIN_NOTE }ref_stale=${REF_REASON:-unknown}"
+      # 고장과 정상 무효화를 화면에서도 가른다. ★ `ref_reason` 토큰 자체는 바꾸지 않는다 —
+      #   write 게이트와 같은 어휘를 쓰고(§2 불변식 2), 구별은 **덧붙이는 필드**로 낸다.
+      [ -n "${_MSHA_UNAVAIL:-}" ] && \
+        PIN_NOTE="$PIN_NOTE metric_status=unavailable:${_MSHA_UNAVAIL}"
+    fi
   fi
 fi
 
