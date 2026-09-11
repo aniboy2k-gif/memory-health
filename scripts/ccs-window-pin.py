@@ -15,6 +15,16 @@ CSR #2262 Action 1 / C-7. 잠금은 호출자(ccs-window-pin.sh)가 잡는다 �
 ★ 불변 필드는 정말 불변으로 다룬다
   `floor` 는 창 개시 시점의 **증거**다(종료 판정이 그것과 대조한다). 그것을 제어 상태로도 쓰면
   한 필드가 감사기록과 가변상태를 겸하게 된다 — 그래서 하향은 `floor_min_observed` 에만 한다.
+  ★ CSR #2262 종료 판정: 설계가 말하는 `open_floor` 가 **바로 이 필드**다(착지 전제조건 4 의 답 —
+    `cmd_lower` 가 `floor` 를 건드리지 않는다는 것이 실측·회귀로 확인됨). 두 번째 필드를 만들지
+    않는다: 같은 값의 사본이 둘이면 갈라질 자리가 생기고, 핀 필드 수 8 이라는 기존 수용조건(§8.8)도
+    깨진다.
+
+★ 창 개시 시점의 **정황**은 핀이 아니라 사이드카 `<pin>.meta.json` 에 둔다
+  타당성(plausibility)·멤버십(composition)·선행창·복구표시는 종료 판정이 소비하는 정황이지
+  참조 해소(`ccs-reference-resolve.py`)의 피연산자가 아니다. 핀에 섞으면 필드 수 계약이 깨지고
+  해소기 입력면이 넓어진다. 사이드카는 핀과 **같은 잠금 안에서** 함께 쓰인다.
+  ★ 사이드카가 없으면 `unknown` 이지 `suspect` 가 아니다 — 부재는 의심의 증거가 아니다.
 """
 import io
 import json
@@ -52,13 +62,24 @@ def _atomic_write(path, obj):
         raise
 
 
-def cmd_create(path, floor, csha, msha, prov):
+def meta_path(pin):
+    return pin + ".meta.json"
+
+
+def cmd_create(path, floor, csha, msha, prov, meta_json="", forced_wid="", opened_at=""):
     if os.path.exists(path):
         print("pin_create_refused=already_exists")
         return 1
     import hashlib
-    opened = _now()
-    wid = hashlib.sha256((opened + csha).encode('utf-8')).hexdigest()[:12]
+    opened = opened_at or _now()
+    # ★ 잔여(명시): `window_id` 는 `sha256(opened_at + composition_sha)[:12]` 이고 `opened_at` 은
+    #   **초 단위**다. 따라서 같은 초에 같은 구성으로 만든 두 핀은 **같은 id** 를 갖는다. 그러면
+    #   종료 판정의 중복확인이 뒤 창을 `already_adjudicated` 로 건너뛴다. 운영에서는 회전이
+    #   세션 시작당 최대 1회이고 창이 20세션을 사는 탓에 사실상 도달하지 않지만, **구조적으로
+    #   배제되지는 않는다**. 시험에서는 실제로 밟혔다(그래서 시험이 id 를 명시로 넘긴다).
+    #   여기서 고치지 않는 이유: 이 파생식은 출하된 필드의 의미론이고, 바꾸면 기존 핀·행의
+    #   id 와 불연속이 생긴다. 고칠 자리는 별도 티켓이다.
+    wid = forced_wid or hashlib.sha256((opened + csha).encode('utf-8')).hexdigest()[:12]
     obj = {
         "opened_at": opened,
         "floor": int(floor),                 # IMMUTABLE — 창 개시 증거
@@ -69,8 +90,44 @@ def cmd_create(path, floor, csha, msha, prov):
         "provenance": prov,
         "window_id": wid,
     }
+    # ★ 사이드카를 **먼저** 쓴다. 핀이 있는데 정황이 없으면 `unknown` 으로 흡수되지만,
+    #   정황만 있고 핀이 없으면 다음 create 가 그 정황을 남의 창 것으로 읽을 수 있다.
+    if meta_json:
+        try:
+            meta = json.loads(meta_json)
+        except ValueError:
+            print("pin_create_refused=meta_unparseable")
+            return 1
+        if not isinstance(meta, dict):
+            print("pin_create_refused=meta_not_object")
+            return 1
+        meta["window_id"] = wid          # 사이드카는 자기가 어느 창 것인지 스스로 말한다
+        meta["written_at"] = _now()
+        _atomic_write(meta_path(path), meta)
     _atomic_write(path, obj)
     print("pin_created=%s window_id=%s floor=%s" % (path, wid, floor))
+    return 0
+
+
+def cmd_read_meta(path):
+    """사이드카를 읽는다. 부재·손상·창 불일치는 전부 **빈 객체**로 — 부재는 의심이 아니다."""
+    try:
+        obj = _read(meta_path(path))
+    except Exception:                        # noqa: BLE001
+        print("{}")
+        return 0
+    if not isinstance(obj, dict):
+        print("{}")
+        return 0
+    try:
+        pin = _read(path)
+    except Exception:                        # noqa: BLE001
+        pin = {}
+    if obj.get("window_id") and pin.get("window_id") and obj["window_id"] != pin["window_id"]:
+        # 다른 창의 정황이다 — 남의 창 표시를 이 창에 적용하지 않는다.
+        print('{"stale_meta":true}')
+        return 0
+    print(json.dumps(obj, ensure_ascii=False, sort_keys=True))
     return 0
 
 
@@ -117,7 +174,12 @@ def main(argv):
         return 2
     cmd, path = argv[1], argv[2]
     if cmd == "create":
-        return cmd_create(path, argv[3], argv[4], argv[5], argv[6])
+        return cmd_create(path, argv[3], argv[4], argv[5], argv[6],
+                          argv[7] if len(argv) > 7 else "",
+                          argv[8] if len(argv) > 8 else "",
+                          argv[9] if len(argv) > 9 else "")
+    if cmd == "read-meta":
+        return cmd_read_meta(path)
     if cmd == "lower":
         return cmd_lower(path, argv[3], argv[4] if len(argv) > 4 else "unknown")
     if cmd == "read":

@@ -46,6 +46,16 @@ PIN="${CCS_PIN_FILE:-$GATE_ARTIFACTS/ccs-window.start}"
 PIN_SH="${CCS_PIN_SH:-$_SELF_DIR/ccs-window-pin.sh}"
 SESSIONS_ROOT="${CCS_WINDOW_SESSIONS_DIR:-$GATE_ARTIFACTS/ccs-window.sessions}"
 OBS_HELPER="${CCS_AUDIT_APPEND:-$HOME/.claude/scripts/append-audit-event.sh}"
+CLOSE_SH="${CCS_WINDOW_CLOSE_SH:-$_SELF_DIR/ccs-window-close.sh}"
+
+# ── 부수 명령: 게이트 회복 (설계 §5.6) ──────────────────────────────────────
+# `ccs-floor-surface.sh gate-recover --window <id> --ack "<사유>"`
+# 카운터가 아니라 **사람이 돌린 명령**만 게이트를 푼다. N회 후 자동 warn 은 측정 실패를 자동
+# 약화로 바꾸는 것이라 채택하지 않았다(이 문서가 다른 모든 곳에서 거부하는 역전과 같은 것).
+if [ "${1:-}" = "gate-recover" ]; then
+  shift
+  exec bash "$CLOSE_SH" gate-recover "$@"
+fi
 
 # 상수는 source 하지 않는다(외부 파일의 코드 실행 회피). 정수만 허용, 실패 시 내장값.
 read_const() {
@@ -115,9 +125,36 @@ SID_SRC="env"
 WINDOW_ID=""
 SESSION_COUNT=""
 PIN_NOTE=""
+CLOSE_NOTE=""
 
 if [ -r "$PIN" ]; then
   WINDOW_ID="$(bash "$PIN_SH" read "$PIN" window_id 2>/dev/null)"
+fi
+
+# ── 창 종료 전이 (설계 §5.1) — **세션 등록보다 먼저** ────────────────────────
+# ★ 순서가 판정을 바꾼다. 이 세션을 옛 창에 먼저 등록하면 그 세션이 옛 창의 계수에 들어가고,
+#   회전 뒤에는 새 창에 등록되지 않은 채로 남는다. 그래서 종료·회전을 먼저 끝내고, **그 다음에**
+#   (새 창일 수도 있는) 현재 핀에 등록한다.
+# ★ 이 호출은 SessionStart 를 절대 막지 않는다 — 거부·실패는 전부 한 줄 필드로 흡수된다.
+#   리스 대기 상한은 라이브러리가 ~5s 로 유계다.
+if [ -x "$CLOSE_SH" ] || [ -r "$CLOSE_SH" ]; then
+  _CLOSE_OUT="$(bash "$CLOSE_SH" close 2>/dev/null | head -1)" || true
+  case "$_CLOSE_OUT" in
+    창종료=*|window_close_refused=*|pin_rotate_refused=*) CLOSE_NOTE="$_CLOSE_OUT" ;;
+    *) : ;;   # `window_close_skipped=not_closing` 등은 정상 상태라 한 줄을 늘리지 않는다
+  esac
+  # 회전했을 수 있으므로 창 id 를 **다시** 읽는다.
+  if [ -r "$PIN" ]; then
+    WINDOW_ID="$(bash "$PIN_SH" read "$PIN" window_id 2>/dev/null)"
+  fi
+fi
+
+# ★ `open_floor` = 핀의 `floor` 필드 (착지 전제조건 4 의 답 — `lower` 가 이 필드를 안 건드린다는
+#   것이 실측·회귀로 확인됐다). 아래 관측행이 이 값을 나르므로, 핀이 지워져도 종료 판정의
+#   피연산자가 살아남는다 (P-B(2)).
+OPEN_FLOOR=""
+if [ -r "$PIN" ]; then
+  OPEN_FLOOR="$(bash "$PIN_SH" read "$PIN" floor 2>/dev/null)"
 fi
 
 if [ -n "$WINDOW_ID" ]; then
@@ -187,6 +224,37 @@ if [ -r "$_SELF_DIR/ccs-degraded-latch.py" ]; then
   case "$DEGRADED" in 0|1) ;; *) DEGRADED=0 ;; esac
 fi
 
+# ── §5.6: 연속 indeterminate 카운터 (가시화 전용 — 게이트를 바꾸지 않는다) ──
+# 지속적인 측정 실패가 옛 `deny` 를 무기한 래치할 수 있다. 그것을 **N회 후 자동 warn** 으로
+# 풀지 않는다 — 그러면 측정 실패가 자동 약화로 바뀐다. 세어서 보이고, 푸는 것은 사람 몫이다.
+STALE_N=""; STALE_WIN=""
+_VSTAT="$(LEDGER="$LEDGER" python3 - <<'PY' 2>/dev/null || true
+import io, json, os
+p = os.environ.get('LEDGER', '')
+last = None
+if p and os.path.isfile(p):
+    try:
+        with io.open(p, encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                if 'window_verdict' not in line:
+                    continue
+                try:
+                    r = json.loads(line.strip())
+                except Exception:
+                    continue
+                if r.get('kind') == 'window_verdict':
+                    last = r
+    except OSError:
+        pass
+if last:
+    print('%s|%s' % (last.get('consecutive_indeterminate', 0), last.get('window_id') or ''))
+PY
+)"
+if [ -n "$_VSTAT" ]; then
+  STALE_N="${_VSTAT%%|*}"; STALE_WIN="${_VSTAT#*|}"
+  case "$STALE_N" in ''|*[!0-9]*) STALE_N="" ;; esac
+fi
+
 # ── 표면화 줄을 **먼저 조립한다** (관측행에 그 바이트 길이를 싣기 위해) ─────
 # 정본 §10.5: 게이트는 파일을 센다. SessionStart stdout 은 **진짜 주입 컨텍스트인데 계측기가
 #   셀 수 없다**. 그 비용을 없앨 수는 없으므로 최소한 **보이게** 만든다 — 이 한 줄의 바이트
@@ -199,6 +267,15 @@ else
   [ -n "$AGE_MIN" ] && [ "$AGE_MIN" -gt "$FLOOR_CACHE_TTL_MIN" ] 2>/dev/null && SUFFIX=" (캐시 ${AGE_MIN}분 전)"
   [ -n "$REFERENCE" ] && SUFFIX="$SUFFIX ref=$REFERENCE"
   [ -n "$SESSION_COUNT" ] && SUFFIX="$SUFFIX 창세션=$SESSION_COUNT/20"
+  # 설계 v5:200-201 — **침묵은 불가능하다**: 창은 인쇄된 판정 없이 닫히지 않는다.
+  #   두 번째 줄을 만들지 않는다(정본 §10.4 한 줄 상한) — 이 한 줄 안의 **필드**로 얹는다.
+  [ -n "$CLOSE_NOTE" ] && SUFFIX="$SUFFIX $CLOSE_NOTE"
+  # §5.6 — 가시 카운터. N≥2 에 표시하고 N≥3 에 회복 명령을 **축자 그대로** 붙인다.
+  #   ★ 이 카운터는 게이트를 바꾸지 않는다. 세는 것과 푸는 것은 다른 일이다.
+  if [ -n "$STALE_N" ] && [ "$STALE_N" -ge 2 ] 2>/dev/null; then
+    SUFFIX="$SUFFIX 게이트=정체($STALE_N)"
+    [ "$STALE_N" -ge 3 ] 2>/dev/null && SUFFIX="$SUFFIX 회복: bash $_SELF_DIR/ccs-floor-surface.sh gate-recover --window ${STALE_WIN:-<id>} --ack \"<사유>\""
+  fi
   # M-g — 같은 줄 안의 필드. 정상일 때는 아무것도 붙이지 않는다(조용한 성공).
   [ "$DEGRADED" = "1" ] && SUFFIX="$SUFFIX ⚠write게이트측정불가=${DEGRADED_RUN}연속"
   [ -n "$PIN_NOTE" ] && SUFFIX="$SUFFIX [$PIN_NOTE]"
@@ -219,12 +296,17 @@ if [ -x "$OBS_HELPER" ] && [ -n "$FLOOR" ]; then
   ROW="$(TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)" FLOOR="$FLOOR" REF="${REFERENCE:-}" \
         REFLEG="${REF_LEG:-3}" REFSTALE="${REF_STALE:-1}" REFREASON="${REF_REASON:-}" \
         WID="${WINDOW_ID:-}" SC="${SESSION_COUNT:-}" SID="$SID" SIDSRC="$SID_SRC" \
+        OPENFLOOR="${OPEN_FLOOR:-}" \
         LB="${LINE_BYTES:-}" DEG="${DEGRADED:-0}" DEGSINCE="${DEGRADED_SINCE:-}" \
         DEGRUN="${DEGRADED_RUN:-0}" \
         AGE="${AGE_MIN:-}" NOTE="${PIN_NOTE:-}" STATE="${STATE:-}" python3 - <<'PY' 2>/dev/null
 import json, os
 row = {
-    "kind": "window_observation", "row_schema_version": 1,
+    # row_schema_version 1 → 2: `open_floor` 추가 (CSR #2262 P-B(2)).
+    #   이 저장소 관례상 **필드 추가 = 범프**다(선례: measurement v2 가 `dir_scoped_roots`·
+    #   `contributions_top3` 를 더하며 범프했다). 소비자 `tests/ledger-reader.js` 의
+    #   `KNOWN_MAX = 2` 이므로 2 는 여전히 지원 범위 안이다(실측).
+    "kind": "window_observation", "row_schema_version": 2,
     "ts": os.environ["TS"], "src": "ccs-floor-surface",
     "floor": int(os.environ["FLOOR"]),
     "gate_state": os.environ.get("STATE") or None,
@@ -238,6 +320,11 @@ row = {
     "ref_stale": int(os.environ["REFSTALE"]) if os.environ.get("REFSTALE","").isdigit() else 1,
     "ref_reason": os.environ.get("REFREASON") or None,
     "window_id": os.environ.get("WID") or None,
+    # ★ P-B(2) — 되돌릴 조건의 **피연산자**를 행마다 복제한다. 창 개시 시점에 얼어붙은 값이라
+    #   핀이 지워져도 살아남고, 종료 판정이 살아 있는 `reference` 대신 이것을 쓴다.
+    #   (살아 있는 값을 쓰면 종료 후 Leg 3 강등 탓에 `floor == reference` 가 되어 조건이
+    #    구조적으로 항상 거짓이 된다 — 실측 27/27.)
+    "open_floor": int(os.environ["OPENFLOOR"]) if os.environ.get("OPENFLOOR","").isdigit() else None,
     "session_id": os.environ.get("SID") or None,
     "session_id_source": os.environ.get("SIDSRC") or None,
     "session_count": int(os.environ["SC"]) if os.environ.get("SC","").isdigit() else None,
