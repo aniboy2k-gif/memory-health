@@ -127,6 +127,62 @@ if [ "${CCS_FLOOR_SURFACE_OFF:-0}" != "1" ] && [ -r "$_CCS_SURFACE" ]; then
   [ -n "$_CCS_LINE" ] && printf '%s\n' "$_CCS_LINE"
 fi
 
+# ── ★반증 有 cue 정합 검사 (CSR #1882 D4) ────────────────────────────────
+#   MEMORY.md 의 「사용자 입력 대기」 줄은 반증 가설의 *내용*을 담지 않고 **단서(★반증 有)만** 담는다.
+#   내용은 게시판 글에 있다. 그 단서가 가리키는 글에 실제로 반증 내용이 없으면 단서가 거짓이 되고,
+#   claude_docs #211 §2⒜("파일을 열 단서가 없으므로 인라인") 와의 정합 근거가 무너진다.
+#   ⇒ 단서마다 그 글을 실제로 열어 확인한다. **advisory** — 절대 차단하지 않는다.
+#   ★ 정직 범위: 게시판이 응답하지 않으면 검사하지 않는다(fail-open). 검사 부재를 통과로 적지 않는다.
+if [ "$EVENT" = "SessionStart" ] && command -v python3 >/dev/null 2>&1; then
+  MH_TARGET="$MEMORY_FILE" python3 - <<'PYEOF' 2>/dev/null || true
+import json, os, re, urllib.request, urllib.error
+
+BASE = os.environ.get("HANDOFF_INBOX_BASE", "http://localhost:3000")
+path = os.environ.get("MH_TARGET", "")
+try:
+    text = open(path, encoding="utf-8", errors="replace").read()
+except Exception:
+    raise SystemExit(0)
+
+# `- <board> #<id> — ... ★반증 有` 형태만 본다
+rows = []
+for line in text.split("\n"):
+    if "★반증" not in line:
+        continue
+    m = re.match(r"\s*-\s+(csr|trader_log)\s+#(\d+)\b", line)
+    if m:
+        rows.append((m.group(1), int(m.group(2))))
+if not rows:
+    raise SystemExit(0)
+
+HINTS = ("반증", "무효", "거짓", "재사용 금지", "재도출", "disproven", "철회")
+bad, unchecked = [], 0
+for board, pid in rows:
+    try:
+        with urllib.request.urlopen(f"{BASE}/api/boards/{board}/posts/{pid}", timeout=2) as r:
+            d = json.load(r).get("data", {})
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            bad.append(f"{board} #{pid}(글 없음)")   # 없는 글 = 명확한 거짓 단서
+        else:
+            unchecked += 1
+        continue
+    except Exception:
+        unchecked += 1          # 보드 미응답 = 검사 안 함(fail-open)
+        continue
+    blob = (d.get("content") or "") + "".join(c.get("content") or "" for c in (d.get("comments") or []))
+    if not any(h in blob for h in HINTS):
+        bad.append(f"{board} #{pid}")
+
+if bad:
+    print("  ⚠ ★반증 有 단서가 가리키는 글에서 반증 내용을 못 찾았습니다: " + ", ".join(bad))
+    print("     단서가 거짓이면 다음 세션이 이미 반증된 가설을 다시 판다 (CSR #1882 D4).")
+if unchecked:
+    print(f"  ℹ cue 검사: {unchecked}건은 게시판 미응답으로 확인하지 않았습니다 (통과 아님).")
+PYEOF
+fi
+
+
 if [ "$HARD" -eq 0 ] && [ "$WARN" -eq 0 ]; then
   exit 0
 fi
