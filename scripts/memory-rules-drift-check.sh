@@ -6,11 +6,21 @@
 #   axis1  active (CLAUDE_MEMORY_DIR) <-> manifest installed_sha256    [user modified?]
 #   axis2  bundle version            <-> manifest version             [upstream updated?]
 #
-# Advisory only (stderr warnings) — never blocks. Threat model = careless self.
+# This SessionStart hook has two responsibilities (CSR #2419):
+#   1. rules drift advisory (above)
+#   2. CLAUDE.md 30-day audit notice (mrdc_audit_notice — reads claude-md-audit-last)
+# Kept in one file because renaming or adding a hook needs a settings.json change (CSR #2416 P7).
+# If a third, unrelated SessionStart notice is proposed for this file, extract it then.
+#
+# Advisory only (stdout) — never blocks. Threat model = careless self.
+# Output goes to stdout because Claude Code adds a SessionStart hook's plain-text stdout to the
+# session context, while "Claude never sees stderr from a hook that exits 0"
+# (code.claude.com/docs/en/hooks, grounding #936).
 # Self-heals: missing/corrupt manifest -> re-baseline from bundle + warn.
 #
 # Modes:
-#   (no args)         SessionStart hook: emit stderr advisory, always exit 0
+#   (no args)         SessionStart hook: stdout drift advisory + audit notice, always exit 0
+#                     (any argument not listed below also takes this branch)
 #   --check           same detection, human-readable to stdout, exit 0/1 (1=drift)
 #   --json            machine-readable findings (for tests)
 #
@@ -108,6 +118,42 @@ mrdc_explain() {
   esac
 }
 
+# CLAUDE.md 30-day audit notice (CSR #2419). Prints at most one line to stdout; never writes.
+# Inputs: MH_AUDIT_LAST (default ~/.claude/da-tools/claude-md-audit-last, written by SKILL.md
+# "감사 완료 후 타임스탬프 갱신"), CLAUDE_MD_AUDIT_INTERVAL (days, default 30 — the same
+# validation is duplicated in SKILL.md "타임스탬프 기반 주기 판정"; keep the two in sync),
+# MH_NOW_EPOCH (tests).
+# Every value passes an anchored regex before any arithmetic: bash aborts the whole shell on
+# "08: value too great for base", so no leading zero and at most 12 digits.
+# The notice clears only after claude-md-improver runs (claude-md-management plugin).
+mrdc_audit_notice() {
+  local file="${MH_AUDIT_LAST:-$HOME/.claude/da-tools/claude-md-audit-last}"
+  local iv="${CLAUDE_MD_AUDIT_INTERVAL:-30}" now="${MH_NOW_EPOCH:-}" last days
+  local re_epoch='^[1-9][0-9]{0,11}$' re_iv='^[1-9][0-9]{0,3}$'
+  local tail_txt="— /memory-health 실행 권장 (감사는 claude-md-management 플러그인 필요)"
+  [[ $iv =~ $re_iv ]] || iv=30
+  [[ $now =~ $re_epoch ]] || now="$(date +%s 2>/dev/null)"
+  [[ $now =~ $re_epoch ]] || return 0
+  if [ ! -f "$file" ]; then
+    echo "[memory-health] CLAUDE.md 감사 기록 없음 (주기 ${iv}일) ${tail_txt}"
+    return 0
+  fi
+  last="$(head -n 1 "$file" 2>/dev/null | tr -d '[:space:]')"
+  if ! [[ $last =~ $re_epoch ]]; then
+    echo "[memory-health] CLAUDE.md 감사 기록을 읽을 수 없음 (${file}) ${tail_txt}"
+    return 0
+  fi
+  if [ "$last" -gt "$now" ]; then
+    echo "[memory-health] CLAUDE.md 감사 기록 시각이 현재보다 미래 (${file}) — 시스템 시계 또는 기록 확인"
+    return 0
+  fi
+  days=$(( (now - last) / 86400 ))
+  if [ "$days" -ge "$iv" ]; then
+    echo "[memory-health] CLAUDE.md 감사 ${days}일 경과 (주기 ${iv}일) ${tail_txt}"
+  fi
+  return 0
+}
+
 mrdc_main() {
   local mode="${1:-hook}"
 
@@ -145,12 +191,14 @@ mrdc_main() {
       while IFS= read -r f; do [ -n "$f" ] && mrdc_explain "$f"; done <<< "$findings"
       printf '%s' "$findings" | grep -qE 'AXIS' && return 1 || return 0
       ;;
-    *)  # hook: stderr advisory only, never block
+    *)  # hook (no args or any unlisted arg): stdout advisory only, never block
       if printf '%s' "$findings" | grep -qE 'AXIS|RECOVERED'; then
-        echo "[memory-health] rules 드리프트 감지:" >&2
-        while IFS= read -r f; do [ -n "$f" ] && [ "$f" != "OK" ] && echo "  $(mrdc_explain "$f")" >&2; done <<< "$findings"
-        echo "  → 자세히: /memory-health --rules 또는 memory-rules-drift-check.sh --check" >&2
+        echo "[memory-health] rules 드리프트 감지:"
+        while IFS= read -r f; do [ -n "$f" ] && [ "$f" != "OK" ] && echo "  $(mrdc_explain "$f")"; done <<< "$findings"
+        echo "  → 자세히: /memory-health --rules 또는 memory-rules-drift-check.sh --check"
       fi
+      # subshell: an internal error (e.g. arithmetic abort) kills only the subshell
+      ( mrdc_audit_notice ) 2>/dev/null || true
       return 0
       ;;
   esac
