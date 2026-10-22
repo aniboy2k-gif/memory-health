@@ -138,7 +138,10 @@ mrdc_audit_notice() {
     echo "[memory-health] CLAUDE.md 감사 기록 없음 (주기 ${iv}일) ${tail_txt}"
     return 0
   fi
-  last="$(head -n 1 "$file" 2>/dev/null | tr -d '[:space:]')"
+  last="$(head -n 1 "$file" 2>/dev/null)"
+  # trim leading/trailing blanks only — inner blanks ("17 00000000") must fail the regex
+  last="${last#"${last%%[![:space:]]*}"}"
+  last="${last%"${last##*[![:space:]]}"}"
   if ! [[ $last =~ $re_epoch ]]; then
     echo "[memory-health] CLAUDE.md 감사 기록을 읽을 수 없음 (${file}) ${tail_txt}"
     return 0

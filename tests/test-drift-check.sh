@@ -93,20 +93,35 @@ echo "$OUT" | grep -q "31일 경과 (주기 30일)" && ok "audit 31d -> stdout n
 [ "$RC" -eq 0 ] && ok "audit 31d -> exit 0" || no "audit 31d rc=$RC"
 echo "$ERR" | grep -q "감사" && no "audit notice leaked to stderr [$ERR]" || ok "audit notice not on stderr"
 
+rc0(){ [ "$RC" -eq 0 ] && ok "$1 -> exit 0" || no "$1 -> rc=$RC"; }
+
 days_ago 1 > "$MH_AUDIT_LAST"; hook
 echo "$OUT" | grep -q "감사" && no "fresh 1d should be silent [$OUT]" || ok "audit 1d -> no notice"
+rc0 "audit 1d"
 
 rm -f "$MH_AUDIT_LAST"; hook
 echo "$OUT" | grep -q "감사 기록 없음 (주기 30일)" && ok "audit absent -> 기록 없음" || no "absent notice missing [$OUT]"
+rc0 "audit absent"
 
 echo "garbage" > "$MH_AUDIT_LAST"; hook
 echo "$OUT" | grep -q "감사 기록을 읽을 수 없음" && ok "audit garbage -> 읽을 수 없음" || no "garbage notice missing [$OUT]"
+rc0 "audit garbage"
 
 echo $(( MH_NOW_EPOCH + 86400 )) > "$MH_AUDIT_LAST"; hook
 echo "$OUT" | grep -q "미래" && ok "audit future -> 미래 시각 notice" || no "future notice missing [$OUT]"
+rc0 "audit future"
 
 days_ago 8 > "$MH_AUDIT_LAST"; CLAUDE_MD_AUDIT_INTERVAL=7 hook
 echo "$OUT" | grep -q "8일 경과 (주기 7일)" && ok "interval 7, 8d -> 주기 7일" || no "custom interval notice wrong [$OUT]"
+rc0 "interval 7"
+
+# design: first line, whitespace-TRIMMED (leading/trailing only) — inner spaces are not a valid record
+printf '17 %s\n' "$(days_ago 31 | cut -c3-)" > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "감사 기록을 읽을 수 없음" && ok "inner space -> 읽을 수 없음" || no "inner space accepted [$OUT]"
+rc0 "inner space"
+printf '  %s \t\n' "$(days_ago 31)" > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "31일 경과 (주기 30일)" && ok "leading/trailing blanks trimmed -> 31일 경과" || no "padded record not trimmed [$OUT]"
+rc0 "padded record"
 
 # drift advisory must reach stdout (stderr never reaches Claude on exit 0) — with a drift present
 days_ago 1 > "$MH_AUDIT_LAST"
