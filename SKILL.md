@@ -180,8 +180,6 @@ fi
 | `DAYS_SINCE < AUDIT_INTERVAL_DAYS` | "✅ CLAUDE.md 감사 최신 (N일 전)" 출력 후 skip |
 | `--with-md` 플래그 명시 | 주기 미경과여도 강제 실행 |
 
-> 세션 시작 알림: SessionStart 훅 `scripts/memory-rules-drift-check.sh` 가 같은 주기로 경과·기록 없음·판독 불가를 한 줄 알린다(CSR #2419).
-
 ### 감사 완료 후 타임스탬프 갱신
 
 ```bash
@@ -496,7 +494,7 @@ Phase 2 (Commit):
 |------|--------|------|
 | OK | < 20,000자 | 정상 |
 | WARN | 20,000 ~ 40,000자 | 조기 경고 (CRITICAL 50% 도달 시점) |
-| CRITICAL | > 40,000자 | 자체 선택 임계 초과 (Claude Code 공식 경고와 별개 — 공식 임계는 모델 컨텍스트 창에 비례, CHANGELOG 2.1.169) |
+| CRITICAL | > 40,000자 | 자체 선택 임계 (Claude Code 공식 경고와 별개 — 공식 임계는 모델 컨텍스트 창에 비례, CHANGELOG 2.1.169) |
 
 임계값 오버라이드: `CLAUDE_RULES_SIZE_WARN`, `CLAUDE_RULES_SIZE_CRITICAL` 환경변수
 
