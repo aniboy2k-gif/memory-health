@@ -245,7 +245,7 @@ fi
 
 # --- 요약 ---
 if [ "$CRITICAL_COUNT" -gt 0 ]; then
-  echo "📊 CRITICAL ${CRITICAL_COUNT}건 — Claude Code 성능 경고 발생 중 (> ${CRITICAL_THRESHOLD}자)"
+  echo "📊 CRITICAL ${CRITICAL_COUNT}건 — 자체 임계 초과 (> ${CRITICAL_THRESHOLD}자 · Claude Code 공식 경고 임계는 컨텍스트 창 비례)"
   echo "   개선 방향:"
   echo "   1. 파일 L3(핵심 요약 자동 로드) + L4(상세 온디맨드) 구조로 분리"
   echo "   2. CLAUDE.md 자동 로드에서 제외 후 온디맨드 참조로 전환"

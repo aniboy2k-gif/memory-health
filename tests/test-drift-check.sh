@@ -14,6 +14,10 @@ export MH_ACTIVE_RULES="$WORK/active.md"
 export MH_BUNDLE_RULES="$WORK/bundle.md"
 export MH_CANONICAL_RULES="$WORK/canonical.md"
 export MH_NOW="2026-05-29T00:00:00Z"
+# CSR #2419: isolate the 30-day audit notice from the real ~/.claude/da-tools/claude-md-audit-last
+export MH_AUDIT_LAST="$WORK/audit-last"
+export MH_NOW_EPOCH=1800000000
+unset CLAUDE_MD_AUDIT_INTERVAL
 trap 'rm -rf "$WORK"' EXIT
 
 mk(){ printf '# version: %s\n# rules\n%s\n' "$1" "$2" > "$3"; }
@@ -75,6 +79,53 @@ printf '# user line\n' >> "$MH_ACTIVE_RULES"          # intentional edit
 bash "$SCRIPT" --diff 2>/dev/null | grep -q "user line" && ok "--diff shows user changes" || no "--diff missing changes"
 bash "$SCRIPT" --acknowledge >/dev/null 2>&1 && ok "--acknowledge succeeds" || no "--acknowledge failed"
 R="$(findings)"; echo "$R" | grep -q "AXIS1" && no "axis1 should clear after acknowledge [$R]" || ok "acknowledge clears axis1"
+
+# ── CSR #2419: 30-day CLAUDE.md audit notice + drift advisory on stdout ──
+# hook(): run hook mode, stdout -> $OUT, stderr -> $ERR, rc -> $RC
+hook(){ bash "$SCRIPT" >"$WORK/out" 2>"$WORK/err"; RC=$?; OUT="$(cat "$WORK/out")"; ERR="$(cat "$WORK/err")"; }
+days_ago(){ echo $(( MH_NOW_EPOCH - $1 * 86400 )); }
+
+# aligned rules (no drift) for the pure notice cases
+bash "$SCRIPT" --acknowledge >/dev/null 2>&1
+
+days_ago 31 > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "31일 경과 (주기 30일)" && ok "audit 31d -> stdout notice" || no "audit 31d notice missing [$OUT]"
+[ "$RC" -eq 0 ] && ok "audit 31d -> exit 0" || no "audit 31d rc=$RC"
+echo "$ERR" | grep -q "감사" && no "audit notice leaked to stderr [$ERR]" || ok "audit notice not on stderr"
+
+days_ago 1 > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "감사" && no "fresh 1d should be silent [$OUT]" || ok "audit 1d -> no notice"
+
+rm -f "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "감사 기록 없음 (주기 30일)" && ok "audit absent -> 기록 없음" || no "absent notice missing [$OUT]"
+
+echo "garbage" > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "감사 기록을 읽을 수 없음" && ok "audit garbage -> 읽을 수 없음" || no "garbage notice missing [$OUT]"
+
+echo $(( MH_NOW_EPOCH + 86400 )) > "$MH_AUDIT_LAST"; hook
+echo "$OUT" | grep -q "미래" && ok "audit future -> 미래 시각 notice" || no "future notice missing [$OUT]"
+
+days_ago 8 > "$MH_AUDIT_LAST"; CLAUDE_MD_AUDIT_INTERVAL=7 hook
+echo "$OUT" | grep -q "8일 경과 (주기 7일)" && ok "interval 7, 8d -> 주기 7일" || no "custom interval notice wrong [$OUT]"
+
+# drift advisory must reach stdout (stderr never reaches Claude on exit 0) — with a drift present
+days_ago 1 > "$MH_AUDIT_LAST"
+printf '# drift line\n' >> "$MH_ACTIVE_RULES"; hook
+echo "$OUT" | grep -q "rules 드리프트 감지" && ok "drift advisory on stdout" || no "drift advisory not on stdout [$OUT]"
+echo "$ERR" | grep -q "rules 드리프트 감지" && no "drift advisory still on stderr" || ok "drift advisory not on stderr"
+[ "$RC" -eq 0 ] && ok "drift hook exit 0" || no "drift hook rc=$RC"
+
+# H-1: malformed values must not abort the hook (bash arithmetic on 08/0999 kills the shell)
+bad_case(){ # $1=label  $2=expected-notice-substring-or-empty
+  hook
+  [ "$RC" -eq 0 ] && ok "$1 -> exit 0" || no "$1 -> rc=$RC"
+  echo "$OUT" | grep -q "rules 드리프트 감지" && ok "$1 -> drift advisory kept" || no "$1 -> drift advisory lost [$OUT]"
+  if [ -n "$2" ]; then echo "$OUT" | grep -q "$2" && ok "$1 -> '$2'" || no "$1 -> expected '$2' [$OUT]"; fi
+}
+echo "0999" > "$MH_AUDIT_LAST"; bad_case "content 0999" "읽을 수 없음"
+echo "12345678901234567890" > "$MH_AUDIT_LAST"; bad_case "content 20-digit" "읽을 수 없음"
+days_ago 31 > "$MH_AUDIT_LAST"
+for iv in 08 abc 0 -5; do CLAUDE_MD_AUDIT_INTERVAL="$iv" bad_case "interval $iv" "31일 경과 (주기 30일)"; done
 
 echo "== result: PASS=$PASS FAIL=$FAIL =="
 [ $FAIL -eq 0 ]

@@ -91,7 +91,7 @@
 |---------|:----:|--------|------|
 | `CLAUDE_RULES_DIR` | **필수** | 없음 | rules 디렉토리 절대 경로. 미설정 시 exit 1 |
 | `CLAUDE_RULES_SIZE_WARN` | 선택 | 20000 | WARN 임계값 (문자 수) |
-| `CLAUDE_RULES_SIZE_CRITICAL` | 선택 | 40000 | CRITICAL 임계값 (문자 수). Claude Code 성능 경고 기준과 일치 |
+| `CLAUDE_RULES_SIZE_CRITICAL` | 선택 | 40000 | CRITICAL 임계값 (문자 수). 자체 선택 임계 — Claude Code 공식 경고와 별개(공식 임계는 모델 컨텍스트 창에 비례, CHANGELOG 2.1.169) |
 | `MEMORY_HEALTH_DEFAULT_RULES` | 선택 | false | `true` 설정 시 기본 dry-run에 Rules Checker 자동 포함 |
 | `CLAUDE_MEMORY_DIR` | 선택 | 없음 | audit 로그(skill-audit.log) 기록 위치 |
 

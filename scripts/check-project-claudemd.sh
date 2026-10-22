@@ -73,7 +73,7 @@ done <<< "$RESULT"
 echo ""
 echo "📊 점검 ${checked}건 / CRITICAL ${crit} / WARN ${warn} / 접근불가 ${missing}"
 if [ "$crit" -gt 0 ]; then
-  echo "   → CRITICAL: 자동 로드 성능 경고 구간(>${CRIT}자). 내용 최적화 권장 — 단 도메인 워크플로우로(ARIA/KRIS=/trader-task). 이 도구는 점검만 함."
+  echo "   → CRITICAL: 자체 임계 초과(>${CRIT}자 · Claude Code 공식 경고 임계는 컨텍스트 창 비례). 내용 최적화 권장 — 단 도메인 워크플로우로(ARIA/KRIS=/trader-task). 이 도구는 점검만 함."
 fi
 
 if [ "$STRICT" -eq 1 ] && { [ "$crit" -gt 0 ] || [ "$warn" -gt 0 ]; }; then

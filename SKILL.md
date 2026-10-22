@@ -160,7 +160,8 @@ bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
 
 ```bash
 AUDIT_LAST="$HOME/.claude/da-tools/claude-md-audit-last"
-AUDIT_INTERVAL_DAYS=30   # 기본 30일, CLAUDE_MD_AUDIT_INTERVAL로 오버라이드 가능
+AUDIT_INTERVAL_DAYS="${CLAUDE_MD_AUDIT_INTERVAL:-30}"   # 기본 30일, CLAUDE_MD_AUDIT_INTERVAL로 오버라이드
+[[ $AUDIT_INTERVAL_DAYS =~ ^[1-9][0-9]{0,3}$ ]] || AUDIT_INTERVAL_DAYS=30   # 08·abc·0·음수 → 30 (훅 memory-rules-drift-check.sh mrdc_audit_notice 와 같은 검증 — 함께 고칠 것)
 
 if [ ! -f "$AUDIT_LAST" ]; then
   DAYS_SINCE=9999         # 한 번도 실행 안 됨
@@ -175,9 +176,11 @@ fi
 
 | 조건 | 동작 |
 |------|------|
-| `DAYS_SINCE >= 30` 또는 파일 없음 | `claude-md-improver` 스킬 호출 → CLAUDE.md 품질 감사 실행 |
-| `DAYS_SINCE < 30` | "✅ CLAUDE.md 감사 최신 (N일 전)" 출력 후 skip |
-| `--with-md` 플래그 명시 | 30일 미경과여도 강제 실행 |
+| `DAYS_SINCE >= AUDIT_INTERVAL_DAYS` 또는 파일 없음 | `claude-md-improver` 스킬 호출 → CLAUDE.md 품질 감사 실행 |
+| `DAYS_SINCE < AUDIT_INTERVAL_DAYS` | "✅ CLAUDE.md 감사 최신 (N일 전)" 출력 후 skip |
+| `--with-md` 플래그 명시 | 주기 미경과여도 강제 실행 |
+
+> 세션 시작 알림: SessionStart 훅 `scripts/memory-rules-drift-check.sh` 가 같은 주기로 경과·기록 없음·판독 불가를 한 줄 알린다(CSR #2419).
 
 ### 감사 완료 후 타임스탬프 갱신
 
@@ -493,7 +496,7 @@ Phase 2 (Commit):
 |------|--------|------|
 | OK | < 20,000자 | 정상 |
 | WARN | 20,000 ~ 40,000자 | 조기 경고 (CRITICAL 50% 도달 시점) |
-| CRITICAL | > 40,000자 | Claude Code 성능 경고 발생 중 |
+| CRITICAL | > 40,000자 | 자체 선택 임계 초과 (Claude Code 공식 경고와 별개 — 공식 임계는 모델 컨텍스트 창에 비례, CHANGELOG 2.1.169) |
 
 임계값 오버라이드: `CLAUDE_RULES_SIZE_WARN`, `CLAUDE_RULES_SIZE_CRITICAL` 환경변수
 
@@ -529,7 +532,7 @@ bash ~/.claude/skills/memory-health/scripts/check-rules.sh [--strict]
 🟡 WARN        25,000자  some-large-rule.md
 ✅ OK           4,000자  small-rule.md
 
-📊 CRITICAL 1건 — Claude Code 성능 경고 발생 중 (> 40,000자)
+📊 CRITICAL 1건 — 자체 임계 초과 (> 40,000자 · Claude Code 공식 경고 임계는 컨텍스트 창 비례)
    개선 방향:
    1. 파일 L3(핵심 요약 자동 로드) + L4(상세 온디맨드) 구조로 분리
    2. CLAUDE.md 자동 로드에서 제외 후 온디맨드 참조로 전환
