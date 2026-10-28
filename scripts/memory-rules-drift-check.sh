@@ -8,7 +8,8 @@
 #
 # This SessionStart hook has two responsibilities (CSR #2419):
 #   1. rules drift advisory (above)
-#   2. CLAUDE.md 30-day audit notice (mrdc_audit_notice — reads claude-md-audit-last)
+#   2. monthly routine notice (mrdc_audit_notice — reads claude-md-audit-last,
+#      skill-update-check-last and skill-update-failed.json; CSR #2450)
 # Kept in one file because renaming or adding a hook needs a settings.json change (CSR #2416 P7).
 # If a third, unrelated SessionStart notice is proposed for this file, extract it then.
 #
@@ -118,41 +119,84 @@ mrdc_explain() {
   esac
 }
 
-# CLAUDE.md 30-day audit notice (CSR #2419). Prints at most one line to stdout; never writes.
-# Inputs: MH_AUDIT_LAST (default ~/.claude/da-tools/claude-md-audit-last, written by SKILL.md
-# "감사 완료 후 타임스탬프 갱신"), CLAUDE_MD_AUDIT_INTERVAL (days, default 30 — the same
-# validation is duplicated in SKILL.md "타임스탬프 기반 주기 판정"; keep the two in sync),
-# MH_NOW_EPOCH (tests).
+# Monthly routine notice (CSR #2419, parts per CSR #2450). Prints at most one line to stdout;
+# never writes. Two parts, each with its own marker and the same interval:
+#   audit  part — MH_AUDIT_LAST (default $STATE/claude-md-audit-last), refreshed only by
+#                 `audit-record.sh post` on REPORTED (the built-in prompt-audit procedure run by
+#                 the read-only auditor subagent)
+#   update part — $STATE/skill-update-check-last (absent = due), refreshed only by
+#                 `audit-record.sh update-check` on UPDATE_CHECK_PASS
+# plus "스킬 업데이트 점검 실패 N건" whenever $STATE/skill-update-failed.json lists N>0 skills,
+# independent of both markers. STATE = MH_STATE_DIR (default ~/.claude/da-tools).
+# Each part clears only when its own marker is refreshed (audit REPORTED / update-check PASS).
+# CLAUDE_MD_AUDIT_INTERVAL (days, default 30 — the same validation is duplicated in SKILL.md
+# "타임스탬프 기반 주기 판정"; keep the two in sync), MH_NOW_EPOCH (tests).
 # Every value passes an anchored regex before any arithmetic: bash aborts the whole shell on
 # "08: value too great for base", so no leading zero and at most 12 digits.
-# The notice clears only after claude-md-improver runs (claude-md-management plugin).
+
+# mrdc_marker_epoch <file>: prints the trimmed first line when it is a valid epoch; rc 1 otherwise
+mrdc_marker_epoch() {
+  local v re_epoch='^[1-9][0-9]{0,11}$'
+  v="$(head -n 1 "$1" 2>/dev/null)"
+  # trim leading/trailing blanks only — inner blanks ("17 00000000") must fail the regex
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  [[ $v =~ $re_epoch ]] || return 1
+  echo "$v"
+}
+
 mrdc_audit_notice() {
-  local file="${MH_AUDIT_LAST:-$HOME/.claude/da-tools/claude-md-audit-last}"
+  local state_dir="${MH_STATE_DIR:-$HOME/.claude/da-tools}"
+  local file="${MH_AUDIT_LAST:-$state_dir/claude-md-audit-last}"
+  local ufile="$state_dir/skill-update-check-last" ffile="$state_dir/skill-update-failed.json"
   local iv="${CLAUDE_MD_AUDIT_INTERVAL:-30}" now="${MH_NOW_EPOCH:-}" last days
-  local re_epoch='^[1-9][0-9]{0,11}$' re_iv='^[1-9][0-9]{0,3}$'
-  local tail_txt="— /memory-health 실행 권장 (감사는 claude-md-management 플러그인 필요)"
+  local re_epoch='^[1-9][0-9]{0,11}$' re_iv='^[1-9][0-9]{0,3}$' re_n='^[1-9][0-9]{0,5}$'
+  local audit_name="CLAUDE.md·규칙 감사(내장 prompt-audit 절차)"
+  local tail_txt="— /memory-health 실행 권장"
+  local parts="" due=0 seg nfail
   [[ $iv =~ $re_iv ]] || iv=30
   [[ $now =~ $re_epoch ]] || now="$(date +%s 2>/dev/null)"
   [[ $now =~ $re_epoch ]] || return 0
+
+  # audit part
+  seg=""
   if [ ! -f "$file" ]; then
-    echo "[memory-health] CLAUDE.md 감사 기록 없음 (주기 ${iv}일) ${tail_txt}"
-    return 0
+    seg="${audit_name}: 감사 기록 없음 (주기 ${iv}일)"; due=1
+  elif ! last="$(mrdc_marker_epoch "$file")"; then
+    seg="${audit_name}: 감사 기록을 읽을 수 없음 (${file})"; due=1
+  elif [ "$last" -gt "$now" ]; then
+    seg="CLAUDE.md·규칙 감사 기록 시각이 현재보다 미래 (${file}) — 시스템 시계 또는 기록 확인"
+  else
+    days=$(( (now - last) / 86400 ))
+    if [ "$days" -ge "$iv" ]; then seg="${audit_name} ${days}일 경과 (주기 ${iv}일)"; due=1; fi
   fi
-  last="$(head -n 1 "$file" 2>/dev/null)"
-  # trim leading/trailing blanks only — inner blanks ("17 00000000") must fail the regex
-  last="${last#"${last%%[![:space:]]*}"}"
-  last="${last%"${last##*[![:space:]]}"}"
-  if ! [[ $last =~ $re_epoch ]]; then
-    echo "[memory-health] CLAUDE.md 감사 기록을 읽을 수 없음 (${file}) ${tail_txt}"
-    return 0
+  [ -n "$seg" ] && parts="$seg"
+
+  # update part (absent = due; unreadable or future = due, so a broken marker never hides it)
+  seg=""
+  if [ ! -f "$ufile" ]; then
+    seg="스킬 업데이트 점검 기한 경과 (기록 없음)"
+  elif ! last="$(mrdc_marker_epoch "$ufile")" || [ "$last" -gt "$now" ]; then
+    seg="스킬 업데이트 점검 기한 경과 (기록을 읽을 수 없음: ${ufile})"
+  else
+    days=$(( (now - last) / 86400 ))
+    [ "$days" -ge "$iv" ] && seg="스킬 업데이트 점검 기한 경과 (${days}일, 주기 ${iv}일)"
   fi
-  if [ "$last" -gt "$now" ]; then
-    echo "[memory-health] CLAUDE.md 감사 기록 시각이 현재보다 미래 (${file}) — 시스템 시계 또는 기록 확인"
-    return 0
+  if [ -n "$seg" ]; then due=1; parts="${parts:+$parts + }$seg"; fi
+
+  # failed fetches from the latest check (independent of the markers)
+  if [ -f "$ffile" ]; then
+    nfail="$(jq -r 'if (.failed|type)=="array" then (.failed|length) else 0 end' "$ffile" 2>/dev/null)"
+    if [[ $nfail =~ $re_n ]]; then
+      due=1; parts="${parts:+$parts + }스킬 업데이트 점검 실패 ${nfail}건"
+    fi
   fi
-  days=$(( (now - last) / 86400 ))
-  if [ "$days" -ge "$iv" ]; then
-    echo "[memory-health] CLAUDE.md 감사 ${days}일 경과 (주기 ${iv}일) ${tail_txt}"
+
+  [ -n "$parts" ] || return 0
+  if [ "$due" = "1" ]; then
+    echo "[memory-health] ${parts} ${tail_txt}"
+  else
+    echo "[memory-health] ${parts}"
   fi
   return 0
 }
