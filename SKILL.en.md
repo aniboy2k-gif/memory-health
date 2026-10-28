@@ -23,7 +23,14 @@ argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --w
 -->
 
 A skill for diagnosing and optimizing the health of your memory files.
-Provides an Optimizer (trims MEMORY.md line count) and a Scanner (splits oversized memory/*.md files).
+Provides an Optimizer (trims MEMORY.md line count) and a Scanner (splits oversized memory/*.md files), plus a
+**monthly routine** — a CLAUDE.md·rules audit (the bundled claude-api `prompt-audit` procedure run by a read-only
+subagent, every 30 days) and a skill update check (every 30 days, check only).
+
+> **Session learnings and hooks (facts, CSR #2450)**: `revise-claude-md-stop.sh` (Stop) and `revise-claude-md-inject.sh`
+> (UserPromptSubmit) were **unwired** from `settings.json` by CSR #2451 A1-P4 (files kept for history). The plugin command
+> `revise-claude-md` is **denied** in `settings.json`. Session learnings are not appended to CLAUDE.md; they are handled at
+> the task's G-7 guide step (CSR #2435 D3).
 
 ## Usage
 
@@ -33,7 +40,7 @@ Provides an Optimizer (trims MEMORY.md line count) and a Scanner (splits oversiz
 /memory-health --scan   → Run Scanner: scan and split memory/*.md files (one approval gate)
 /memory-health catalog  → Build knowledge catalog: regenerate 3-axis metadata index (read-only)
 /memory-health --fix --json  → Output dry-run results as JSON (for automation/pipelines)
-/memory-health --with-md     → memory health + CLAUDE.md quality audit (requires claude-md-management plugin)
+/memory-health --with-md     → memory health + forced monthly routine (prompt-audit by the read-only auditor + skill update check)
 ```
 
 The default is dry-run — no files are changed.
@@ -41,9 +48,12 @@ The default is dry-run — no files are changed.
 Execution flow:
 ```
 /memory-health         → show dry-run results (no gate)
+                          → monthly routine (each part only when its own marker is due — see "Monthly routine")
+                             audit part: audit-record.sh pre → read-only auditor agent → post
+                             update part: audit-record.sh update-check (check only, never apply)
 /memory-health --fix   → show dry-run results → approval gate → execute
 /memory-health --scan  → show scan results    → approval gate → execute
-/memory-health --with-md → Phase A(memory health dry-run) → Phase B(CLAUDE.md quality audit) → Phase C(session learnings prompt)
+/memory-health --with-md → Phase A(memory health dry-run) → Phase B(forced monthly routine) → Phase C(session learnings handling)
 ```
 
 ### --fix --json mode
@@ -85,9 +95,147 @@ touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 | Type | File | Role | Side effects |
 |------|------|------|--------------|
 | hook | `memory-line-check.sh` | Automatic monitoring + warnings only | None |
-| skill | `/memory-health` | Manual interactive execution + actual optimization | File changes |
+| subagent | `memory-health-prompt-auditor-ro` (`~/.claude/agents/`) | Monthly audit runner — tools are only `Read, Grep, Glob` (no write tool) | None (report + proposed diff only) |
+| skill | `/memory-health` | Manual interactive execution + actual optimization + monthly routine | File changes |
+
+> `revise-claude-md-stop.sh` and `revise-claude-md-inject.sh` are unwired (CSR #2451 A1-P4) — they are on no execution path, so they are not in this table.
 
 The hook only prints warnings. Actual edits are handled by this skill.
+
+---
+
+## Monthly routine — CLAUDE.md·rules audit + skill update check (part of the default dry-run, CSR #2450)
+
+> **Prerequisites**:
+> - The procedure file `~/.claude/skills/claude-api/shared/prompt-audit.md` and the auditor definition
+>   `~/.claude/agents/memory-health-prompt-auditor-ro.md` must exist (otherwise `pre` returns ENGINE_UNAVAILABLE / AUDITOR_MISCONFIGURED).
+> - The bundled claude-api skill must not be turned off (`skillOverrides` / `disableBundledSkills`).
+> - Claude Code v2.1.283+ is needed only for the user-typed `/doctor prompt-audit` form.
+> - Run it in a session started without `--add-dir` / `/add-dir` / `--agents` (not visible on disk, so `pre` cannot see them — RF).
+
+After the default `/memory-health` run (dry-run), the two parts below run. **Each part runs only when its own marker is
+due** (`--with-md` forces both). If both are due: audit first, then the update check — both are attempted and recorded,
+and each refreshes only its own marker.
+
+**The audit is its own phase** — run it after memory-health's write phases (Optimizer `--fix`, Scanner `--scan`) have
+finished, and change no file while it runs. Applying the audit's proposed diff happens only outside this phase, with a
+separate approval.
+
+### Timestamp-based interval check
+
+```bash
+AUDIT_LAST="$HOME/.claude/da-tools/claude-md-audit-last"          # audit part — refreshed only by audit-record.sh post on REPORTED
+UPDATE_LAST="$HOME/.claude/da-tools/skill-update-check-last"      # update part — refreshed only by update-check on PASS
+AUDIT_INTERVAL_DAYS="${CLAUDE_MD_AUDIT_INTERVAL:-30}"   # default 30 days, override with CLAUDE_MD_AUDIT_INTERVAL (both parts)
+[[ $AUDIT_INTERVAL_DAYS =~ ^[1-9][0-9]{0,3}$ ]] || AUDIT_INTERVAL_DAYS=30   # 08/abc/0/negative → 30 (same validation as the hook memory-rules-drift-check.sh mrdc_audit_notice — change both together)
+
+days_since() {   # missing or unreadable = 9999 (treated as due)
+  local v; v="$(head -n 1 "$1" 2>/dev/null | tr -d '[:space:]')"
+  [[ $v =~ ^[1-9][0-9]{0,11}$ ]] || { echo 9999; return; }
+  echo $(( ($(date +%s) - v) / 86400 ))
+}
+AUDIT_DAYS=$(days_since "$AUDIT_LAST"); UPDATE_DAYS=$(days_since "$UPDATE_LAST")
+```
+
+### Decision
+
+| Condition | Action |
+|-----------|--------|
+| `AUDIT_DAYS >= AUDIT_INTERVAL_DAYS` (incl. missing file) | audit part — the four steps below |
+| `UPDATE_DAYS >= AUDIT_INTERVAL_DAYS` (incl. missing file) | update part — `audit-record.sh update-check` |
+| neither due | print "✅ monthly routine up to date (audit N days ago · update check M days ago)" and skip |
+| `--with-md` given | run both parts even if not due |
+
+### Audit part — four steps (only the script decides the state)
+
+Audit scope (fixed list, made into absolute paths by `pre`): `~/.claude/CLAUDE.md` · `~/.claude/rules/*.md` (top level only) ·
+`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md` and `SKILL.en.md` · the current working directory's `CLAUDE.md` (if any).
+
+```bash
+AR="$HOME/.claude/skills/memory-health/scripts/audit-record.sh"
+bash "$AR" pre --cwd "$PWD"      # ① STATE=READY prints RUN_DIR=<path> · any other STATE: stop here and report it
+```
+
+② **Spawn the subagent (foreground)** — Agent tool, `subagent_type: "memory-health-prompt-auditor-ro"`, `model: "opus"`,
+never in the background. Use this prompt as is, with `<MANIFEST>` replaced by the content of `$RUN_DIR/manifest.txt`, unchanged:
+
+```
+model: opus (reason: audit)
+Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
+to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
+<MANIFEST>
+End with one `COVERED: <abs path> last_line=<n>` line per path above (n = the last line number your
+Read tool showed for that file), then one `FINDINGS high=<n> medium=<n> low=<n>` line.
+```
+
+③ Save the agent's **full final message** to `$RUN_DIR/report.md` (Write — no summarizing or editing).
+
+```bash
+bash "$AR" post "$RUN_DIR" "$RUN_DIR/report.md"   # ④ refreshes claude-md-audit-last only on REPORTED
+```
+
+Report: `STATE`, finding counts, and the saved copy (`~/.claude/da-tools/claude-md-audit-reports/<ts>.md`, mode 600, newest 12 kept).
+If the Agent call itself errors, skip ③④ and report "audit engine unavailable (ENGINE_UNAVAILABLE)" — no marker refresh.
+
+### Update part — skill update check
+
+```bash
+bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-advisor/scripts/update.py --json
+```
+
+- Report the `SKILL: <name> channel=<channel> status=<status>` lines (updates available, fetch errors) as printed.
+- **Applying is not automatic** — `update.py --apply` replaces a SKILL.md wholesale, the targets are the claude-forge
+  canonical files, and `/skill-advisor --update --apply` auto-runs `--listing-audit --apply`, which is forbidden until the
+  CSR #1806 decision. Applying is a separate owner-approved step in a claude-forge worktree + PR, calling
+  `update.py <skill> --apply` directly. skill-advisor itself stays frozen (no change) until #1806.
+
+### State table (`~/.claude/da-tools/claude-md-audit.jsonl`, field `part`)
+
+| State | Step | Meaning | Marker refreshed |
+|-------|------|---------|------------------|
+| `READY` | pre | checks passed, run dir created | none |
+| `AUDITOR_SHADOWED` | pre | more than one definition with that name, or the only one is outside the user level (`~/.claude/agents/`) — searches project `.claude/agents/` (subfolders included, from cwd up to `/`). Plugin folders and `additionalDirectories` cannot shadow the name and are not searched | none |
+| `AUDITOR_MISCONFIGURED` | pre | no definition, frontmatter keys ≠ {name, description, tools, model}, `tools` ≠ `Read, Grep, Glob`, `model` ∉ {opus, sonnet, inherit} | none |
+| `ENGINE_UNAVAILABLE` | pre | procedure file missing (or the Agent call errors) | none |
+| `SCOPE_UNRESOLVED` | pre | `CLAUDE_MEMORY_DIR` unset or its `MEMORY.md` missing (incl. a missing scope file) | none |
+| `AUDITOR_CHANGED` | post | definition sha256 differs from pre or file missing — report kept but untrusted | none |
+| `SCOPE_CHANGED_DURING_AUDIT` | post | a scope file's sha256 differs from pre | none |
+| `AUDIT_INCOMPLETE` | post | a `COVERED` line missing, `last_line` ≠ actual line count, or no parseable `FINDINGS` line | none |
+| `REPORTED` | post | last line number of every file reported correctly + FINDINGS parsed (`read_evidence:"last_line_match"`) | `claude-md-audit-last` |
+| `UPDATE_CHECK_PASS` | update | exit 0/1 + parseable JSON + `fetch_error < total` | `skill-update-check-last` + `skill-update-failed.json` |
+| `UPDATE_CHECK_FAILED` | update | exit 2/124/137/other, unparseable JSON, `fetch_error == total` | none (`skill-update-failed.json` unchanged) |
+
+What `REPORTED` means: the auditor reported the last line number of every file correctly without being given it —
+evidence it opened each file; neither full reading nor review quality is proven. Finding counts are the auditor's own.
+`--dry-run` (post, update-check) writes no marker, jsonl line or saved report; it only prints the record.
+
+### What is covered (Covers — Round-8 wording)
+
+> The auditor's tool calls are read-only provided the invoked agent actually uses the validated read-only definition
+> and Claude Code enforces its tool allowlist. Pre/post hashing detects persistent definition changes but cannot
+> establish that the definition remained unchanged throughout invocation. Concurrent changes, including changes
+> subsequently restored and live-reload effects, are excluded from this guarantee. A matching hash does not certify
+> runtime definition integrity.
+
+### Residual risks (disclosed)
+
+- **RA** Relies on Claude Code honoring the `tools` allowlist (documented) — `pre` catches an edited definition, not a harness regression.
+- **RB** The user-typed `/doctor prompt-audit` full run executes in the main session with all tools (auto mode) — protection covers only this routine.
+- **RC** The auditor cannot spawn sub-auditors — the monthly scope must fit one agent; truncation shows as AUDIT_INCOMPLETE.
+- **RD** The main session writes the report, jsonl and both markers (fixed paths outside the audit scope).
+- **RE** Model-orchestrated — the script cannot prove the saved text came from the auditor; finding counts are the auditor's own.
+- **RF** Session-only `--add-dir` / `/add-dir` / `--agents` definitions are not visible on disk, so `pre` cannot see them — run in a session started without those flags.
+- **RG** Hook side effects are outside the guarantee — the scope sha256 comparison only catches a persistent byte change between the two snapshots, not transient writes restored before `post`, same-content rewrites, or writes outside the scope.
+- **RH** A definition changed and restored to identical bytes between pre and post, or changes delivered by live reload in that window, cannot be seen by a byte comparison.
+
+### Full-scope audit (run by the user)
+
+To audit all skills, commands and agents under `~/.claude/`, the user types `/doctor prompt-audit` (no path) themselves.
+⚠ That run is **not write-protected** (RB · claude-code issue #99288: files edited with no apply request) — review the
+proposed diff before approving any apply. memory-health never runs the full scope automatically (cost).
+
+> Replaced engine: this routine used to call claude-md-improver from the claude-md-management plugin. Its code-repository
+> rubric and working-directory-only discovery never saw rules, skills, MEMORY.md or cross-file contradictions, so CSR #2450 replaced it.
 
 ---
 
@@ -341,9 +489,7 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 
 ## CLAUDE.md Integration (`--with-md`)
 
-> **Prerequisite**: `claude-md-management` plugin must be installed.
-> Install: `claude plugin install claude-md-management`
-> Verify: `claude plugin list`
+> **Prerequisite**: same as the "Monthly routine" section (procedure file + auditor definition, bundled claude-api skill on).
 
 `--with-md` can be combined with other flags: `/memory-health --with-md`, `/memory-health --fix --with-md`.
 
@@ -353,41 +499,26 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 - Runs the existing dry-run / `--fix` / `--scan` / `--rules` logic unchanged
 - Proceeds to Phase B after Phase A completes
 
-**Phase B — CLAUDE.md quality audit (invokes `claude-md-improver` skill)**
+**Phase B — forced monthly routine (prompt-audit + skill update check)**
 
-Audits CLAUDE.md files in the current working directory:
+Regardless of the interval, runs both parts of the "Monthly routine" section as written (its own phase — after Phase A's writes finish):
+`audit-record.sh pre` → spawn the subagent `memory-health-prompt-auditor-ro` (foreground) with the manifest paths →
+save its final message to a file → `audit-record.sh post` → `audit-record.sh update-check`.
+- Output: the state (`STATE`), finding counts, report + proposed diff, update-check list
+- **No files are modified in this phase** (report only) — applying the proposed diff needs a separate approval
 
-```bash
-find . -name "CLAUDE.md" -o -name ".claude.local.md" 2>/dev/null | head -10
-```
+**Phase C — Session learnings handling**
 
-If files exist, runs `claude-md-improver` Phases 1–3 (Discovery → Quality Assessment → Quality Report).
-- Outputs quality scores (A–F grade)
-- Lists issues and recommended additions
-- **No files are modified in this phase** (report only)
-
-If no files found:
-```
-ℹ️  No CLAUDE.md found — no CLAUDE.md in the current directory.
-   Run from the project root or create a CLAUDE.md first.
-```
-
-**Phase C — Session learnings prompt**
-
-After Phase B, outputs:
-```
-💡 Capture session learnings
-   To incorporate discoveries from this session into CLAUDE.md:
-   /revise-claude-md
-   (available with claude-md-management plugin installed)
-```
+After Phase B, learnings from this session are handled this way (not appended to CLAUDE.md — CSR #2435 D3):
+- If a task post exists (CSR, trader_log, …), handle them at that task's G-7 guide step.
+- Otherwise report them and state "보고만 했습니다 — 등록되지 않았습니다" (reported only — not recorded).
 
 For `--fix --with-md`: Phase A `--fix` completes, then Phase B → C follows.
 
 ### --with-md completion criteria
 - Phase A: same as the respective mode's completion criteria
-- Phase B: CLAUDE.md quality report output complete (no file changes)
-- Phase C: session learnings prompt output complete
+- Phase B: state of both parts reported (no file changes)
+- Phase C: learnings passed to the G-7 step, or "reported only — not recorded" stated
 
 ---
 
@@ -441,5 +572,13 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 | `--scan` | Once | memory/*.md content changes |
 | `catalog` | No | read-only (creates only the two catalog/ index files, originals untouched) |
 | `--fix --json` | No | Same as dry-run, exits after JSON output |
-| `--with-md` (Phase B) | No | claude-md-improver report only (no file changes) |
-| `--with-md` Phase B→edit | Once | Separate approval if claude-md-improver applies edits |
+| `--with-md` (Phase B) | No | prompt-audit report + proposed diff only (read-only auditor agent, no file changes) |
+| `--with-md` Phase B→edit | Once | Separate approval to apply the prompt-audit proposed diff (outside the audit phase) |
+
+---
+
+## CHANGELOG
+
+| Date | Change |
+|------|--------|
+| 2026-10-29 | **CSR #2450 — 30-day audit engine replaced + skill update check added**. Engine moved from claude-md-improver (claude-md-management plugin) to the bundled claude-api `prompt-audit` procedure — the read-only subagent `memory-health-prompt-auditor-ro` (tools `Read, Grep, Glob`) audits a fixed scope (global CLAUDE.md, rules, MEMORY.md, this skill's two SKILL files, cwd CLAUDE.md) and only `scripts/audit-record.sh` (pre/post/update-check) decides the state. Update check (skill-advisor `update.py --json`, never applied) with separate markers (`claude-md-audit-last`, `skill-update-check-last`). Hook narrative corrected (unwired by CSR #2451 A1-P4, plugin command denied), Phase C replaced by the G-7 step (CSR #2435 D3). Plugin name removed from the notice. |

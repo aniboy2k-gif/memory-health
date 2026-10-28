@@ -26,10 +26,13 @@ argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --w
 
 메모리 파일 건강 상태를 진단하고 최적화하는 스킬.
 Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분리),
-**CLAUDE.md 주기적 감사** (claude-md-management 연동, 30일 주기 자동 실행)를 제공한다.
+**월간 루틴** — CLAUDE.md·규칙 감사(내장 claude-api `prompt-audit` 절차를 읽기 전용 하위 에이전트가 실행, 30일 주기)와
+스킬 업데이트 점검(30일 주기, 점검만)을 제공한다.
 
-> **연동 훅**: 작업 단계 완료 시 `revise-claude-md-stop.sh`(Stop) + `revise-claude-md-inject.sh`(UserPromptSubmit)이
-> `/revise-claude-md`를 자동 주입한다. — 별도 설치 불필요 (settings.json 등록 완료)
+> **세션 학습·훅 (사실, CSR #2450)**: `revise-claude-md-stop.sh`(Stop)·`revise-claude-md-inject.sh`(UserPromptSubmit)는
+> CSR #2451 A1-P4 로 `settings.json` 배선이 **해제**됐다(파일은 이력으로 보존). 플러그인 명령 `revise-claude-md` 는
+> `settings.json` 에서 **거부(deny)** 된다. 세션 학습은 CLAUDE.md 에 덧붙이지 않고, 해당 작업의 G-7 가이드 단계에서
+> 다룬다(CSR #2435 D3).
 
 ## 사용법
 
@@ -77,12 +80,14 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 ```
 /memory-health         → ① dry-run 결과 출력
                           ② skill 원격 최신화 점검 (CSR #962 — 인터넷 fetch, 4h 쿨다운, 비차단)
-                          ③ CLAUDE.md 주기 감사 (30일 경과 or 미실행 시 자동 → claude-md-improver 호출)
+                          ③ 월간 루틴 (각 부분은 자기 기록이 기한 경과일 때만 — 아래 "월간 루틴" 절)
+                             감사 부분: audit-record.sh pre → 읽기 전용 감사 에이전트 → post
+                             업데이트 부분: audit-record.sh update-check (점검만, 적용 없음)
                           ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
 /memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행
 /memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
 /memory-health --rules → Rules Checker 실행 (파일 변경 없음, 게이트 없음)
-/memory-health --with-md → CLAUDE.md 감사 강제 실행 (주기 미경과도 실행)
+/memory-health --with-md → 월간 루틴 두 부분 강제 실행 (주기 미경과도 실행)
 ```
 
 ### --fix --json 모드
@@ -124,11 +129,12 @@ touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 | 구분 | 파일 | 역할 | 부작용 |
 |------|------|------|--------|
 | hook | `memory-line-check.sh` | MEMORY.md 자동 감시 + 경고만 | 없음 |
-| hook | `revise-claude-md-stop.sh` | 작업 완료 감지 → pending 생성 | 없음 |
-| hook | `revise-claude-md-inject.sh` | pending 확인 → /revise-claude-md 자동 주입 | 없음 |
-| skill | `/memory-health` | 대화형 수동 실행 + 실제 최적화 + 주기적 CLAUDE.md 감사 | 파일 변경 |
+| subagent | `memory-health-prompt-auditor-ro` (`~/.claude/agents/`) | 월간 감사 실행자 — 도구는 `Read, Grep, Glob` 뿐(쓰기 도구 없음) | 없음 (보고서 + 제안 diff 만) |
+| skill | `/memory-health` | 대화형 수동 실행 + 실제 최적화 + 월간 루틴 진행 | 파일 변경 |
 
-hook은 경고·주입만 한다. 실제 수정은 이 스킬이 담당한다.
+> `revise-claude-md-stop.sh`·`revise-claude-md-inject.sh` 는 배선 해제됐다(CSR #2451 A1-P4) — 실행 경로에 없으므로 이 표에서 뺐다.
+
+hook은 경고만 한다. 실제 수정은 이 스킬이 담당한다.
 
 ---
 
@@ -149,55 +155,140 @@ bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
 
 ---
 
-## CLAUDE.md 주기적 감사 (기본 dry-run에 통합)
+## 월간 루틴 — CLAUDE.md·규칙 감사 + 스킬 업데이트 점검 (기본 dry-run에 통합, CSR #2450)
 
-> **전제 조건**: `claude-md-management` 플러그인 설치 필요.
-> `claude plugin install claude-md-management` 후 사용 가능.
+> **전제 조건**:
+> - 절차 파일 `~/.claude/skills/claude-api/shared/prompt-audit.md` 와 감사 에이전트 정의
+>   `~/.claude/agents/memory-health-prompt-auditor-ro.md` 가 있어야 한다(없으면 `pre` 가 ENGINE_UNAVAILABLE·AUDITOR_MISCONFIGURED).
+> - 내장 claude-api 스킬을 끄지 않아야 한다(`skillOverrides`·`disableBundledSkills`).
+> - Claude Code v2.1.283+ 는 사용자가 직접 치는 `/doctor prompt-audit` 형식에만 필요하다.
+> - 세션을 `--add-dir`·`/add-dir`·`--agents` 없이 시작한 상태에서 실행한다(디스크에 보이지 않아 `pre` 가 못 본다 — RF).
 
-`/memory-health` 기본 실행(dry-run) 종료 후 자동으로 아래 절차를 수행한다.
+`/memory-health` 기본 실행(dry-run) 종료 후 아래 두 부분을 수행한다. **각 부분은 자기 기록이 기한 경과일 때만**
+돈다(`--with-md` 는 둘 다 강제). 둘 다 기한이면 감사 먼저, 그다음 업데이트 점검 — 둘 다 시도·기록하고, 각자 자기 기록만 갱신한다.
+
+**감사는 독립된 단계다** — memory-health 의 쓰기 단계(Optimizer `--fix`·Scanner `--scan`)가 끝난 뒤에 돌리고,
+감사 도중에는 어떤 파일도 고치지 않는다. 감사가 낸 제안 diff 의 적용은 이 단계 밖에서 별도 승인으로만 한다.
 
 ### 타임스탬프 기반 주기 판정
 
 ```bash
-AUDIT_LAST="$HOME/.claude/da-tools/claude-md-audit-last"
-AUDIT_INTERVAL_DAYS="${CLAUDE_MD_AUDIT_INTERVAL:-30}"   # 기본 30일, CLAUDE_MD_AUDIT_INTERVAL로 오버라이드
+AUDIT_LAST="$HOME/.claude/da-tools/claude-md-audit-last"          # 감사 부분 — audit-record.sh post 가 REPORTED 때만 갱신
+UPDATE_LAST="$HOME/.claude/da-tools/skill-update-check-last"      # 업데이트 부분 — update-check 가 PASS 때만 갱신
+AUDIT_INTERVAL_DAYS="${CLAUDE_MD_AUDIT_INTERVAL:-30}"   # 기본 30일, CLAUDE_MD_AUDIT_INTERVAL로 오버라이드 (두 부분 공통)
 [[ $AUDIT_INTERVAL_DAYS =~ ^[1-9][0-9]{0,3}$ ]] || AUDIT_INTERVAL_DAYS=30   # 08·abc·0·음수 → 30 (훅 memory-rules-drift-check.sh mrdc_audit_notice 와 같은 검증 — 함께 고칠 것)
 
-if [ ! -f "$AUDIT_LAST" ]; then
-  DAYS_SINCE=9999         # 한 번도 실행 안 됨
-else
-  NOW=$(date +%s)
-  LAST=$(cat "$AUDIT_LAST")
-  DAYS_SINCE=$(( (NOW - LAST) / 86400 ))
-fi
+days_since() {   # 파일 없음·읽을 수 없음 = 9999 (기한 경과로 본다)
+  local v; v="$(head -n 1 "$1" 2>/dev/null | tr -d '[:space:]')"
+  [[ $v =~ ^[1-9][0-9]{0,11}$ ]] || { echo 9999; return; }
+  echo $(( ($(date +%s) - v) / 86400 ))
+}
+AUDIT_DAYS=$(days_since "$AUDIT_LAST"); UPDATE_DAYS=$(days_since "$UPDATE_LAST")
 ```
 
 ### 판정 결과
 
 | 조건 | 동작 |
 |------|------|
-| `DAYS_SINCE >= AUDIT_INTERVAL_DAYS` 또는 파일 없음 | `claude-md-improver` 스킬 호출 → CLAUDE.md 품질 감사 실행 |
-| `DAYS_SINCE < AUDIT_INTERVAL_DAYS` | "✅ CLAUDE.md 감사 최신 (N일 전)" 출력 후 skip |
-| `--with-md` 플래그 명시 | 주기 미경과여도 강제 실행 |
+| `AUDIT_DAYS >= AUDIT_INTERVAL_DAYS` (파일 없음 포함) | 감사 부분 — 아래 4단계 |
+| `UPDATE_DAYS >= AUDIT_INTERVAL_DAYS` (파일 없음 포함) | 업데이트 부분 — `audit-record.sh update-check` |
+| 둘 다 미경과 | "✅ 월간 루틴 최신 (감사 N일 전 · 업데이트 점검 M일 전)" 출력 후 skip |
+| `--with-md` 플래그 명시 | 주기 미경과여도 두 부분 강제 실행 |
 
-### 감사 완료 후 타임스탬프 갱신
+### 감사 부분 — 4단계 (상태는 스크립트만 정한다)
+
+감사 범위(고정 목록, `pre` 가 절대경로로 만든다): `~/.claude/CLAUDE.md` · `~/.claude/rules/*.md`(최상위만) ·
+`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md`·`SKILL.en.md` · 현재 작업 디렉터리의 `CLAUDE.md`(있을 때).
 
 ```bash
-date +%s > "$HOME/.claude/da-tools/claude-md-audit-last"
+AR="$HOME/.claude/skills/memory-health/scripts/audit-record.sh"
+bash "$AR" pre --cwd "$PWD"      # ① STATE=READY 면 RUN_DIR=<경로> 출력 · 그 밖의 STATE 면 여기서 멈추고 보고
 ```
 
-### `claude-md-improver` 호출 시 수행 내용
+② **하위 에이전트 실행 (포그라운드)** — Agent 도구, `subagent_type: "memory-health-prompt-auditor-ro"`, `model: "opus"`,
+백그라운드 실행 금지. 프롬프트는 아래 그대로, `<MANIFEST>` 자리에 `$RUN_DIR/manifest.txt` 내용을 한 줄도 바꾸지 않고 넣는다:
 
-1. 현재 작업 디렉토리의 `CLAUDE.md` 파일 탐색 (`find . -name "CLAUDE.md"`)
-2. 각 파일에 대해 품질 평가 (A~F 등급, 6개 기준 × 100점)
-3. 품질 보고서 출력 (이슈 + 권장 추가 사항)
-4. **파일 변경 없음** — 보고서만 출력, 실제 수정은 사용자 승인 필요
+```
+model: opus (reason: audit)
+Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
+to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
+<MANIFEST>
+End with one `COVERED: <abs path> last_line=<n>` line per path above (n = the last line number your
+Read tool showed for that file), then one `FINDINGS high=<n> medium=<n> low=<n>` line.
+```
 
-CLAUDE.md가 없는 경우:
+③ 에이전트의 **최종 메시지 전문**을 `$RUN_DIR/report.md` 로 저장한다(Write — 요약·편집 금지).
+
+```bash
+bash "$AR" post "$RUN_DIR" "$RUN_DIR/report.md"   # ④ REPORTED 일 때만 claude-md-audit-last 갱신
 ```
-ℹ️  CLAUDE.md 없음 — 현재 디렉토리에 CLAUDE.md가 없습니다.
-   프로젝트 루트에서 실행하거나 CLAUDE.md를 먼저 생성하세요.
+
+결과 보고: `STATE`, findings 개수, 보고서 사본 경로(`~/.claude/da-tools/claude-md-audit-reports/<ts>.md`, mode 600, 최근 12개 보존).
+에이전트 호출 자체가 오류로 끝나면 ③④를 하지 않고 "감사 엔진 사용 불가(ENGINE_UNAVAILABLE)"로 보고한다 — 기록 갱신 없음.
+
+### 업데이트 부분 — 스킬 업데이트 점검
+
+```bash
+bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-advisor/scripts/update.py --json
 ```
+
+- 출력의 `SKILL: <이름> channel=<채널> status=<상태>` 줄(업데이트 가능·가져오기 실패)을 그대로 보고한다.
+- **적용은 자동이 아니다** — `update.py --apply` 는 SKILL.md 를 통째로 바꾸고 대상이 claude-forge 정본이며,
+  `/skill-advisor --update --apply` 는 CSR #1806 결정 전 금지된 `--listing-audit --apply` 를 자동 실행한다.
+  적용은 사용자 승인 후 claude-forge 작업 트리 + PR 에서 `update.py <skill> --apply` 를 직접 호출하는 별도 단계다.
+  skill-advisor 자체는 #1806 결정까지 고정(변경 없음).
+
+### 상태 표 (`~/.claude/da-tools/claude-md-audit.jsonl`, 필드 `part`)
+
+| 상태 | 단계 | 뜻 | 갱신하는 기록 |
+|------|------|----|--------------|
+| `READY` | pre | 검사 통과, 실행 디렉터리 생성 | 없음 |
+| `AUDITOR_SHADOWED` | pre | 같은 이름의 정의가 둘 이상, 또는 유일한 정의가 사용자 수준(`~/.claude/agents/`) 밖 — 프로젝트 `.claude/agents/`(하위 폴더 포함, cwd 부터 `/` 까지) 검색. 플러그인 폴더·`additionalDirectories` 는 이름이 겹쳐도 그림자가 아니라 검색 안 함 | 없음 |
+| `AUDITOR_MISCONFIGURED` | pre | 정의 없음, frontmatter 키가 {name, description, tools, model} 와 다름, `tools` ≠ `Read, Grep, Glob`, `model` ∉ {opus, sonnet, inherit} | 없음 |
+| `ENGINE_UNAVAILABLE` | pre | 절차 파일 없음 (또는 에이전트 호출 오류) | 없음 |
+| `SCOPE_UNRESOLVED` | pre | `CLAUDE_MEMORY_DIR` 미설정 또는 그 `MEMORY.md` 없음 (범위 파일 누락 포함) | 없음 |
+| `AUDITOR_CHANGED` | post | 정의 파일 sha256 이 pre 와 다름 또는 파일 없음 — 보고서는 남기되 신뢰 불가 | 없음 |
+| `SCOPE_CHANGED_DURING_AUDIT` | post | 범위 파일 sha256 이 pre 와 다름 | 없음 |
+| `AUDIT_INCOMPLETE` | post | `COVERED` 줄 누락, `last_line` 이 실제 줄 수와 다름, `FINDINGS` 줄 파싱 불가 | 없음 |
+| `REPORTED` | post | 모든 파일의 마지막 줄 번호를 정확히 보고 + FINDINGS 파싱 (`read_evidence:"last_line_match"`) | `claude-md-audit-last` |
+| `UPDATE_CHECK_PASS` | update | exit 0·1 + JSON 파싱 + `fetch_error < total` | `skill-update-check-last` + `skill-update-failed.json` |
+| `UPDATE_CHECK_FAILED` | update | exit 2·124·137·기타, JSON 파싱 불가, `fetch_error == total` | 없음 (`skill-update-failed.json` 그대로) |
+
+`REPORTED` 의 뜻: 감사 에이전트가 줄 수를 받지 않고도 모든 파일의 마지막 줄 번호를 맞혔다 — 각 파일을 열었다는
+증거다. 끝까지 읽었다는 것도, 검토 품질도 증명하지 않는다. findings 개수는 에이전트 자신의 집계다.
+`--dry-run`(post·update-check)은 기록·jsonl·보고서 사본을 쓰지 않고 레코드를 화면에만 출력한다.
+
+### 보장 범위 (Covers — Round-8 원문)
+
+> The auditor's tool calls are read-only provided the invoked agent actually uses the validated read-only definition
+> and Claude Code enforces its tool allowlist. Pre/post hashing detects persistent definition changes but cannot
+> establish that the definition remained unchanged throughout invocation. Concurrent changes, including changes
+> subsequently restored and live-reload effects, are excluded from this guarantee. A matching hash does not certify
+> runtime definition integrity.
+
+(번역: 감사 에이전트의 도구 호출은, 호출된 에이전트가 검증된 읽기 전용 정의를 실제로 쓰고 Claude Code 가 도구 허용 목록을
+지킬 때에 한해 읽기 전용이다. pre/post 해시는 정의의 지속적 변경을 잡지만 호출 내내 정의가 그대로였음을 입증하지 못한다.
+되돌려진 변경·실시간 재로딩을 포함한 동시 변경은 이 보장에서 제외된다. 해시 일치는 실행 시점 정의 무결성을 보증하지 않는다.)
+
+### 잔여 위험 (공개)
+
+- **RA** Claude Code 가 `tools` 허용 목록을 지킨다는 데 기댄다(문서화된 동작) — `pre` 는 정의 편집을 잡을 뿐 하네스 회귀는 못 잡는다.
+- **RB** 사용자가 직접 치는 `/doctor prompt-audit` 전체 실행은 본 세션에서 모든 도구로 돈다(auto 모드) — 보호는 이 루틴에만 적용된다.
+- **RC** 감사 에이전트는 하위 감사자를 띄울 수 없다 — 월간 범위가 한 에이전트에 맞아야 하고, 잘리면 AUDIT_INCOMPLETE 로 드러난다.
+- **RD** 보고서·jsonl·두 기록은 본 세션이 쓴다(감사 범위 밖의 고정 경로).
+- **RE** 모델이 진행을 조율한다 — 저장된 글이 감사 에이전트에게서 왔음을 스크립트가 증명하지 못하고, findings 개수는 에이전트 자신의 것이다.
+- **RF** 세션 한정 `--add-dir`·`/add-dir`·`--agents` 정의는 디스크에 보이지 않아 `pre` 가 못 본다 — 그런 플래그 없이 시작한 세션에서 실행한다.
+- **RG** 훅이 일으키는 부수 쓰기는 보장 밖이다 — 범위 파일 sha256 비교는 두 시점 사이의 지속적 바이트 변경만 잡고, 되돌려진 일시 쓰기·같은 내용 재기록·범위 밖 쓰기는 못 잡는다.
+- **RH** pre 와 post 사이에 바뀌었다가 같은 바이트로 되돌려진 정의, 그 사이 실시간 재로딩으로 전달된 변경은 바이트 비교로 볼 수 없다.
+
+### 전체 범위 감사 (사용자 직접 실행)
+
+`~/.claude/` 의 스킬·명령·에이전트 전체를 보려면 사용자가 `/doctor prompt-audit`(경로 없이)를 직접 친다.
+⚠ 이 실행은 **쓰기 보호가 없다**(RB · claude-code issue #99288: 적용 요청 없이 파일을 고친 사례) — 적용을 승인하기 전에
+제안 diff 를 반드시 검토한다. memory-health 는 이 전체 실행을 자동으로 하지 않는다(비용).
+
+> 대체된 엔진: 이전에는 claude-md-management 플러그인의 claude-md-improver 를 불렀다. 코드 저장소용 채점표에 작업 디렉터리만
+> 탐색해 규칙·스킬·MEMORY.md 와 파일 간 모순을 보지 못해 CSR #2450 으로 교체했다.
 
 ---
 
@@ -587,9 +678,7 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 
 ## CLAUDE.md 통합 (`--with-md`)
 
-> **전제 조건**: `claude-md-management` 플러그인이 설치되어 있어야 한다.
-> 설치: `claude plugin install claude-md-management`
-> 확인: `claude plugin list`
+> **전제 조건**: 위 "월간 루틴" 절의 전제 조건과 같다(절차 파일 + 감사 에이전트 정의, 내장 claude-api 스킬 켜짐).
 
 `--with-md`는 다른 플래그와 병용 가능하다: `/memory-health --with-md`, `/memory-health --fix --with-md`, `/memory-health --scan --with-md`.
 
@@ -599,43 +688,26 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 - 기존 dry-run / `--fix` / `--scan` / `--rules` 로직 그대로 수행
 - Phase A 완료 후 Phase B로 진행
 
-**Phase B — CLAUDE.md 품질 감사 (`claude-md-improver` 스킬 호출)**
+**Phase B — 월간 루틴 강제 실행 (prompt-audit 감사 + 스킬 업데이트 점검)**
 
-현재 작업 디렉토리의 CLAUDE.md 파일을 감사한다:
+주기와 무관하게 위 "월간 루틴" 절의 두 부분을 그대로 수행한다(독립된 단계 — Phase A 의 쓰기가 끝난 뒤):
+`audit-record.sh pre` → 하위 에이전트 `memory-health-prompt-auditor-ro`(포그라운드)에 manifest 경로 전달 →
+최종 메시지를 파일로 저장 → `audit-record.sh post` → `audit-record.sh update-check`.
+- 결과: 상태(`STATE`), findings 개수, 보고서 + 제안 diff, 업데이트 점검 목록
+- **이 단계에서는 파일을 수정하지 않는다** (보고만) — 제안 diff 적용은 별도 승인
 
-```bash
-# CLAUDE.md 파일 존재 여부 사전 확인
-find . -name "CLAUDE.md" -o -name ".claude.local.md" 2>/dev/null | head -10
-```
+**Phase C — 세션 학습 처리**
 
-파일이 존재하면 `claude-md-improver` 스킬의 Phase 1~3(Discovery → Quality Assessment → Quality Report)을 실행한다.
-- 품질 점수 출력 (A~F 등급)
-- 이슈 및 권장 추가사항 출력
-- **이 단계에서는 파일을 수정하지 않는다** (보고만)
-
-파일이 없으면:
-```
-ℹ️  CLAUDE.md 없음 — 현재 디렉토리에 CLAUDE.md가 없습니다.
-   프로젝트 루트에서 실행하거나 CLAUDE.md를 먼저 생성하세요.
-```
-
-**Phase C — 세션 학습 캡처 제안**
-
-Phase B 완료 후 다음 안내를 출력한다:
-
-```
-💡 세션 학습 캡처
-   이번 세션에서 발견한 내용을 CLAUDE.md에 반영하려면:
-   /revise-claude-md
-   (claude-md-management 플러그인 설치 시 사용 가능)
-```
+Phase B 완료 후, 이번 세션에서 나온 학습을 이렇게 다룬다(CLAUDE.md 에 덧붙이지 않는다 — CSR #2435 D3):
+- 작업 글(CSR·trader_log 등)이 있으면 그 작업의 G-7 가이드 단계에서 다룬다.
+- 없으면 학습을 보고하고 "보고만 했습니다 — 등록되지 않았습니다"라고 밝힌다.
 
 `--fix --with-md` 조합인 경우: Phase A의 `--fix` 완료 후 Phase B→C 순서로 이어진다.
 
 ### --with-md 완료 기준
 - Phase A: 기존 모드별 완료 기준과 동일
-- Phase B: CLAUDE.md 품질 보고서 출력 완료 (파일 변경 없음)
-- Phase C: 세션 학습 캡처 안내 출력 완료
+- Phase B: 두 부분의 상태 보고 완료 (파일 변경 없음)
+- Phase C: 학습을 G-7 단계로 넘겼거나 "보고만 했습니다 — 등록되지 않았습니다" 명시
 
 ---
 
@@ -691,8 +763,8 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 | `--rules` | 불필요 | read-only, 파일 변경 없음 |
 | `catalog` | 불필요 | read-only (catalog/ 인덱스 2파일만 생성, 원본 무변경) |
 | `--fix --json` | 불필요 | dry-run과 동일, JSON 출력 후 종료 |
-| `--with-md` (Phase B) | 불필요 | claude-md-improver 보고만 (파일 변경 없음) |
-| `--with-md` Phase B→수정 | 1회 필요 | claude-md-improver 수정 적용 시 별도 승인 |
+| `--with-md` (Phase B) | 불필요 | prompt-audit 보고서 + 제안 diff 만 (읽기 전용 감사 에이전트, 파일 변경 없음) |
+| `--with-md` Phase B→수정 | 1회 필요 | prompt-audit 제안 diff 적용 시 별도 승인 (감사 단계 밖에서) |
 
 ---
 
@@ -700,6 +772,7 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 | 일자 | 변경 |
 |------|------|
+| 2026-10-29 | **CSR #2450 — 30일 감사 엔진 교체 + 스킬 업데이트 점검 추가**. 엔진을 claude-md-improver(claude-md-management 플러그인)에서 내장 claude-api `prompt-audit` 절차로 교체 — 읽기 전용 하위 에이전트 `memory-health-prompt-auditor-ro`(도구 `Read, Grep, Glob`)가 고정 범위(전역 CLAUDE.md·rules·MEMORY.md·이 스킬 SKILL 두 파일·cwd CLAUDE.md)를 감사하고 `scripts/audit-record.sh`(pre/post/update-check)만 상태를 정한다. 업데이트 점검(skill-advisor `update.py --json`, 적용 없음)과 기록 분리(`claude-md-audit-last`·`skill-update-check-last`). 연동 훅 서술 정정(CSR #2451 A1-P4 배선 해제·플러그인 명령 거부), Phase C 를 G-7 단계로 교체(CSR #2435 D3). 알림 문구에서 플러그인 이름 제거. |
 | 2026-08-10 | ★ **CSR #1825 — 캡의 단위가 바이트가 아니라 문자임을 행동실측으로 확정. CSR #807/#806 전제 반증**. 카나리아 8케이스: 24,899자 로드 / 25,099자 절단(경계 25,000문자) · 10,734자·31,534**바이트** 전문 로드(바이트 캡 없음) · 302줄 절단(줄 캡 200 독립) · code point 12,909 / UTF-16 25,409 절단(단위=UTF-16 code unit). 결과: 임계를 문자 체계(25,000/20,000/17,500)와 줄 체계(200/160/140)로 교체, `wc -c` 판정 폐기. 훅을 **A-7(안정 shim + 단일 구현)** 로 재설계 — 배선본은 정책을 담지 않고 이벤트 채널 계약·위임·부재 고발만 한다. `find \| head -1` 대상 결박 폐지(비결정성 실증), 대상 경로 stdout 출력(INV-3), 자기무력화 고발 SessionStart 한정. `cap-constants.env` SSOT(source 금지) + `tests/cap-boundary-probe.sh` 행동 재검증. da_verification=776(Tier 1 · Conditional Y · CRITICAL 0). |
 | 2026-05-23 | **CSR #807 — 25KB 바이트 캡 + 한글 비율 모니터링 + R7~R8 룰 추가**. memory-line-check.sh에 BYTE_COUNT + 한글 비율 측정 추가 (`CLAUDE_MEMORY_BYTE_WARN=24500` env 지원). memory-health-rules.md R7 자연어 포인터 우선 + R8 path-scoped rules 활용 신설. SKILL.md 7단계 검증을 줄 수 + 바이트 동시 검증으로 확장. rule_version 1.0.0 → 1.1.0. 한글 14%+ 환경 byte cap silent truncation 주의 박제. 근거: CSR #806 (193줄 = 25,849 bytes = 캡 249 bytes 초과 실증) + Anthropic 공식 문서 RAG (ChatGPT·Claude Web 강한 합의). |
 | 2026-05-19 | CSR #656·#658·#659·#671·#779 — R6 Sidecar Fingerprint + 재설계 Phase C·D 시리즈. |

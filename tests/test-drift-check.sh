@@ -18,6 +18,9 @@ export MH_NOW="2026-05-29T00:00:00Z"
 export MH_AUDIT_LAST="$WORK/audit-last"
 export MH_NOW_EPOCH=1800000000
 unset CLAUDE_MD_AUDIT_INTERVAL
+# CSR #2450: isolate the update part (skill-update-check-last, skill-update-failed.json)
+export MH_STATE_DIR="$WORK/da-tools"
+mkdir -p "$MH_STATE_DIR"
 trap 'rm -rf "$WORK"' EXIT
 
 mk(){ printf '# version: %s\n# rules\n%s\n' "$1" "$2" > "$3"; }
@@ -141,6 +144,46 @@ echo "0999" > "$MH_AUDIT_LAST"; bad_case "content 0999" "읽을 수 없음"
 echo "12345678901234567890" > "$MH_AUDIT_LAST"; bad_case "content 20-digit" "읽을 수 없음"
 days_ago 31 > "$MH_AUDIT_LAST"
 for iv in 08 abc 0 -5; do CLAUDE_MD_AUDIT_INTERVAL="$iv" bad_case "interval $iv" "31일 경과 (주기 30일)"; done
+
+# ── CSR #2450: per-part notice (audit part / update part / failed list) ──
+UPD="$MH_STATE_DIR/skill-update-check-last"; FJ="$MH_STATE_DIR/skill-update-failed.json"
+bash "$SCRIPT" --acknowledge >/dev/null 2>&1   # no drift: the notice is the only stdout
+# part_case <label> <audit-days|absent> <update-days|absent> <failed-json|none> <want-audit 0/1> <want-update 0/1> <want-failed-N|0>
+part_case(){
+  local label="$1"
+  if [ "$2" = "absent" ]; then rm -f "$MH_AUDIT_LAST"; else days_ago "$2" > "$MH_AUDIT_LAST"; fi
+  if [ "$3" = "absent" ]; then rm -f "$UPD"; else days_ago "$3" > "$UPD"; fi
+  if [ "$4" = "none" ]; then rm -f "$FJ"; else printf '%s\n' "$4" > "$FJ"; fi
+  hook
+  rc0 "$label"
+  local nl; nl="$(printf '%s' "$OUT" | grep -c .)"
+  [ "$nl" -le 1 ] && ok "$label -> at most one line" || no "$label -> $nl lines [$OUT]"
+  if [ "$5" = "1" ]; then
+    echo "$OUT" | grep -q "prompt-audit" && ok "$label -> names prompt-audit" || no "$label -> prompt-audit missing [$OUT]"
+  else
+    echo "$OUT" | grep -q "prompt-audit" && no "$label -> prompt-audit should be absent [$OUT]" || ok "$label -> no prompt-audit"
+  fi
+  if [ "$6" = "1" ]; then
+    echo "$OUT" | grep -q "스킬 업데이트 점검 기한 경과" && ok "$label -> update due named" || no "$label -> update due missing [$OUT]"
+  else
+    echo "$OUT" | grep -q "스킬 업데이트 점검 기한 경과" && no "$label -> update due should be absent [$OUT]" || ok "$label -> no update due"
+  fi
+  if [ "$7" != "0" ]; then
+    echo "$OUT" | grep -q "스킬 업데이트 점검 실패 ${7}건" && ok "$label -> 실패 ${7}건" || no "$label -> 실패 ${7}건 missing [$OUT]"
+  else
+    echo "$OUT" | grep -q "점검 실패" && no "$label -> 점검 실패 should be absent [$OUT]" || ok "$label -> no 점검 실패"
+  fi
+  echo "$OUT" | grep -qE "claude-md-management|claude-md-improver" && no "$label -> plugin named [$OUT]" || ok "$label -> plugin never named"
+}
+part_case "both due"            31 absent none                       1 1 0
+part_case "both due (31/31)"    31 31     none                       1 1 0
+part_case "audit only"          31 1      none                       1 0 0
+part_case "update only"         1  31     none                       0 1 0
+part_case "update absent only"  1  absent none                       0 1 0
+part_case "failed 2, fresh"     1  1      '{"ts":"x","failed":["a","b"]}' 0 0 2
+part_case "failed empty, fresh" 1  1      '{"ts":"x","failed":[]}'   0 0 0
+echo "$OUT" | grep -q . && no "fresh markers + empty failed -> should be silent [$OUT]" || ok "fresh markers + empty failed -> silent"
+part_case "audit absent + failed 2" absent 1 '{"failed":["a","b"]}'  1 0 2
 
 echo "== result: PASS=$PASS FAIL=$FAIL =="
 [ $FAIL -eq 0 ]
