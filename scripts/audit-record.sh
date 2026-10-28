@@ -10,12 +10,18 @@
 # Subcommands:
 #   pre [--cwd DIR]                       validate auditor + scope, write the run dir, print STATE/RUN_DIR
 #   post <run-dir> <report-file> [--dry-run]   check the auditor report, refresh the audit marker on REPORTED
+#   fail <run-dir> <reason-text>          record ENGINE_UNAVAILABLE when the Agent call errors (no marker)
 #   update-check [--dry-run]              run the update check, refresh the update marker on PASS
 #
 # States (stdout `STATE=<name>`; first failing check wins):
 #   pre   : AUDITOR_SHADOWED | AUDITOR_MISCONFIGURED | ENGINE_UNAVAILABLE | SCOPE_UNRESOLVED | READY
 #   post  : AUDITOR_CHANGED | SCOPE_CHANGED_DURING_AUDIT | AUDIT_INCOMPLETE | REPORTED
+#   fail  : ENGINE_UNAVAILABLE
 #   update: UPDATE_CHECK_FAILED | UPDATE_CHECK_PASS
+# The run dir holds manifest.txt (paths only), private.tsv (path<TAB>sha256 — no line counts:
+# post counts lines itself, design A5-C2), definition.sha256 and procedure.sha256.
+# The saved report copy starts with a header written by post (state, read_evidence, residuals
+# RE/RF/RH; AUDITOR_CHANGED adds "신뢰 불가"); the auditor's text follows unchanged.
 # Only REPORTED writes $STATE/claude-md-audit-last; only UPDATE_CHECK_PASS writes
 # $STATE/skill-update-check-last. --dry-run writes neither marker, no jsonl line and no saved
 # report (it prints the record instead).
@@ -50,7 +56,7 @@ REPORTS_DIR="$STATE/claude-md-audit-reports"
 RUNS_DIR="$STATE/claude-md-audit-runs"
 REPORTS_KEEP=12
 
-die_usage() { echo "usage: audit-record.sh pre [--cwd DIR] | post <run-dir> <report-file> [--dry-run] | update-check [--dry-run]" >&2; exit 64; }
+die_usage() { echo "usage: audit-record.sh pre [--cwd DIR] | post <run-dir> <report-file> [--dry-run] | fail <run-dir> <reason-text> | update-check [--dry-run]" >&2; exit 64; }
 
 now_epoch() {
   local re='^[1-9][0-9]{0,11}$' n="${MH_NOW_EPOCH:-}"
@@ -254,11 +260,13 @@ $ske
   : > "$run/private.tsv"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
-    printf '%s\t%s\t%s\n' "$f" "$(sha256_of "$f")" "$(line_count "$f")" >> "$run/private.tsv"
+    # path + sha256 only: no line count is stored where the auditor's Read could see it (A5-C2)
+    printf '%s\t%s\n' "$f" "$(sha256_of "$f")" >> "$run/private.tsv"
   done < "$run/manifest.txt"
   chmod 600 "$run/manifest.txt" "$run/private.tsv"
   printf '%s  %s\n' "$(sha256_of "$USER_MATCH")" "$USER_MATCH" > "$run/definition.sha256"
-  chmod 600 "$run/definition.sha256"
+  printf '%s  %s\n' "$(sha256_of "$PROCEDURE")" "$PROCEDURE" > "$run/procedure.sha256"
+  chmod 600 "$run/definition.sha256" "$run/procedure.sha256"
   echo "STATE=READY"
   echo "RUN_DIR=$run"
   echo "MANIFEST=$run/manifest.txt"
@@ -266,6 +274,25 @@ $ske
 }
 
 # ── post ────────────────────────────────────────────────────────────────────
+# report_header <state> <read_evidence>: the block post prepends to the saved report copy
+# (design :64/:150/:164/:191 — residuals RE, RF, RH disclosed in the run report).
+report_header() {
+  local ev="${2:-}"
+  [ -n "$ev" ] || ev="없음"
+  printf '%s\n' "# [memory-health 감사 보고서 사본 — 머리말]" \
+    "> 이 머리말은 audit-record.sh post 가 붙였다. 아래 구분선 다음은 감사 에이전트의 최종 메시지 원문 그대로다." \
+    "> 상태: $1" \
+    "> read_evidence: $ev"
+  if [ "$1" = "AUDITOR_CHANGED" ]; then
+    printf '%s\n' "> ⚠ 신뢰 불가 — AUDITOR_CHANGED: pre 이후 감사 에이전트 정의 파일이 바뀌었거나 사라졌다. 이 보고서의 판단을 근거로 쓰지 않는다."
+  fi
+  printf '%s\n' \
+    "> RE — 진행은 모델이 조율한다: 저장된 글이 감사 에이전트에게서 왔음을 스크립트가 증명하지 못하며, findings 개수와 검토 품질은 감사 에이전트 자신의 것이다." \
+    "> RF — 세션 한정 --add-dir·/add-dir·--agents 정의는 디스크에 보이지 않아 pre 가 확인하지 못했다. 이 실행은 그런 플래그 없이 시작한 세션에서 돌았다고 가정한다." \
+    "> RH — pre 와 post 사이에 바뀌었다가 같은 바이트로 되돌려진 정의, 그 사이 실시간 재로딩으로 전달된 변경은 바이트 비교로 감지할 수 없다." \
+    "" "---" ""
+}
+
 cmd_post() {
   [ $# -ge 2 ] || die_usage
   local run="$1" report="$2" dry=0
@@ -280,22 +307,7 @@ cmd_post() {
   done
   [ -f "$report" ] || : # a missing report is judged below as AUDIT_INCOMPLETE
 
-  # save a copy of the report (not in dry-run)
-  local saved=""
-  if [ "$dry" = "0" ] && [ -f "$report" ]; then
-    mkdir -p "$REPORTS_DIR" && chmod 700 "$REPORTS_DIR"
-    local rbase n=0
-    rbase="$REPORTS_DIR/$(file_ts)"; saved="$rbase.md"
-    while [ -e "$saved" ]; do n=$((n + 1)); saved="$rbase-$n.md"; done
-    cp "$report" "$saved" && chmod 600 "$saved"
-    # keep newest $REPORTS_KEEP
-    local old
-    ls -1t "$REPORTS_DIR" 2>/dev/null | grep '\.md$' | tail -n +$((REPORTS_KEEP + 1)) | while IFS= read -r old; do
-      rm -f "$REPORTS_DIR/$old"
-    done
-  fi
-
-  local state="" reason="" missing=""
+  local saved="" state="" reason="" missing=""
   local scope_count; scope_count="$(awk 'NF>0' "$run/manifest.txt" | wc -l | tr -d ' ')"
 
   # 1. AUDITOR_CHANGED
@@ -310,9 +322,10 @@ cmd_post() {
   fi
 
   # 2. SCOPE_CHANGED_DURING_AUDIT
-  local p s nl
+  # (a legacy third column in private.tsv is read into `rest` and ignored)
+  local p s rest nl
   if [ -z "$state" ]; then
-    while IFS="$(printf '\t')" read -r p s nl; do
+    while IFS="$(printf '\t')" read -r p s rest; do
       [ -n "$p" ] || continue
       if [ ! -f "$p" ] || [ "$(sha256_of "$p")" != "$s" ]; then
         state="SCOPE_CHANGED_DURING_AUDIT"; reason="$reason$p "
@@ -339,9 +352,12 @@ cmd_post() {
     done < "$report"
   fi
   if [ -z "$state" ]; then
+    # reached only when every scope file's sha256 equals pre's, so the current file is the
+    # audited content; post counts its logical lines here and now (design A5-C2)
     local got bad_n
-    while IFS="$(printf '\t')" read -r p s nl; do
+    while IFS="$(printf '\t')" read -r p s rest; do
       [ -n "$p" ] || continue
+      nl="$(line_count "$p")"
       got="$(P="$p" awk -F'\t' '$1==ENVIRON["P"]{print $2}' "$covered")"
       if [ -z "$got" ]; then missing="$missing$p
 "; continue; fi
@@ -361,16 +377,38 @@ cmd_post() {
 
   local evidence=""
   [ "$state" = "REPORTED" ] && evidence="last_line_match"
+
+  # save a copy of the report with the post header prepended (not in dry-run)
+  if [ "$dry" = "0" ] && [ -f "$report" ]; then
+    mkdir -p "$REPORTS_DIR" && chmod 700 "$REPORTS_DIR"
+    local rbase n=0
+    rbase="$REPORTS_DIR/$(file_ts)"; saved="$rbase.md"
+    while [ -e "$saved" ]; do n=$((n + 1)); saved="$rbase-$n.md"; done
+    { report_header "$state" "$evidence"; cat "$report"; } > "$saved" && chmod 600 "$saved"
+    # keep newest $REPORTS_KEEP
+    local old
+    ls -1t "$REPORTS_DIR" 2>/dev/null | grep '\.md$' | tail -n +$((REPORTS_KEEP + 1)) | while IFS= read -r old; do
+      rm -f "$REPORTS_DIR/$old"
+    done
+  fi
+
   if [ "$state" = "REPORTED" ] && [ "$dry" = "0" ]; then
     mkdir -p "$STATE" && atomic_write "$AUDIT_MARKER" "$(now_epoch)"
   fi
+
+  # sha256 values recorded at pre (procedure.sha256 is absent in run dirs made before it existed)
+  local proc_sha=""
+  [ -f "$run/procedure.sha256" ] && proc_sha="$(awk 'NR==1{print $1}' "$run/procedure.sha256")"
 
   local rec
   rec="$(jq -nc --arg ts "$(iso_ts)" --arg st "$state" --arg ev "$evidence" \
     --arg fh "$fh" --arg fm "$fm" --arg fl "$fl" --arg sc "$scope_count" --arg run "$run" \
     --arg rep "$saved" --arg reason "$reason" --arg missing "$missing" --argjson dry "$([ "$dry" = 1 ] && echo true || echo false)" \
+    --arg asha "$def_sha" --arg psha "$proc_sha" \
     '{ts:$ts, part:"audit", state:$st,
       read_evidence:(if $ev=="" then null else $ev end),
+      auditor_sha256:(if $asha=="" then null else $asha end),
+      procedure_sha256:(if $psha=="" then null else $psha end),
       findings_high:(if $fh=="" then null else ($fh|tonumber) end),
       findings_medium:(if $fm=="" then null else ($fm|tonumber) end),
       findings_low:(if $fl=="" then null else ($fl|tonumber) end),
@@ -385,6 +423,23 @@ cmd_post() {
   append_jsonl "$rec" "$dry"
   [ "$state" = "REPORTED" ]
   exit $?
+}
+
+# ── fail ────────────────────────────────────────────────────────────────────
+# The Agent call that spawns the auditor errored (design :114, :118): record ENGINE_UNAVAILABLE.
+# Never writes or touches claude-md-audit-last.
+cmd_fail() {
+  [ $# -eq 2 ] && [ -n "$2" ] || die_usage
+  local run="$1" reason="$2"
+  command -v jq >/dev/null 2>&1 || { echo "ERROR=jq missing" >&2; exit 2; }
+  [ -d "$run" ] || { echo "ERROR=run dir missing: $run" >&2; exit 2; }
+  local rec
+  rec="$(jq -nc --arg ts "$(iso_ts)" --arg run "$run" --arg r "$reason" \
+    '{ts:$ts, part:"audit", step:"agent", state:"ENGINE_UNAVAILABLE", reason:$r, run_dir:$run}')"
+  echo "STATE=ENGINE_UNAVAILABLE"
+  echo "REASON=$reason"
+  append_jsonl "$rec" 0
+  exit 1
 }
 
 # ── update-check ────────────────────────────────────────────────────────────
@@ -416,7 +471,7 @@ cmd_update() {
     fi
   fi
 
-  local total="" utd="" ua="" fe="" failed="[]"
+  local total="" utd="" ua="" lc="" fe="" failed="[]"
   if [ -z "$reason" ]; then
     case "$rc" in
       0|1)
@@ -425,7 +480,11 @@ cmd_update() {
           fe="$(jq -r '.summary.fetch_error' "$out")"
           utd="$(jq -r '.summary.up_to_date // 0' "$out")"
           ua="$(jq -r '.summary.update_available // 0' "$out")"
-          failed="$(jq -c '[.results[]? | select(.status=="fetch-error") | (.skill // .name // "?")]' "$out" 2>/dev/null || echo '[]')"
+          lc="$(jq -r '.summary.local_custom // 0' "$out")"
+          # the same four statuses update.py build_summary counts as fetch_error (update.py:255),
+          # so len(failed) == summary.fetch_error
+          failed="$(jq -c '[.results[]? | select(.status as $s | ["fetch-error","local-missing","config-error","no-url"] | index($s))
+                            | (.skill // .name // "?")]' "$out" 2>/dev/null || echo '[]')"
           if [ "$fe" -lt "$total" ] 2>/dev/null; then
             state="UPDATE_CHECK_PASS"
           else
@@ -455,11 +514,11 @@ cmd_update() {
 
   local rec
   rec="$(jq -nc --arg ts "$(iso_ts)" --arg st "$state" --arg rc "$rc" --arg t "$total" --arg u "$utd" \
-    --arg a "$ua" --arg e "$fe" --argjson f "$failed" --arg reason "$reason" \
+    --arg a "$ua" --arg l "$lc" --arg e "$fe" --argjson f "$failed" --arg reason "$reason" \
     --argjson dry "$([ "$dry" = 1 ] && echo true || echo false)" \
     'def n: if .=="" then null else tonumber end;
      {ts:$ts, part:"update", state:$st, exit:($rc|tonumber), total:($t|n), up_to_date:($u|n),
-      update_available:($a|n), fetch_error:($e|n), failed:$f,
+      update_available:($a|n), local_custom:($l|n), fetch_error:($e|n), failed:$f,
       reason:(if $reason=="" then null else $reason end), dry_run:$dry}')"
   echo "STATE=$state"
   [ -n "$reason" ] && echo "REASON=$reason"
@@ -471,6 +530,7 @@ cmd_update() {
 case "${1:-}" in
   pre) shift; cmd_pre "$@" ;;
   post) shift; cmd_post "$@" ;;
+  fail) shift; cmd_fail "$@" ;;
   update-check) shift; cmd_update "$@" ;;
   *) die_usage ;;
 esac

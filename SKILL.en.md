@@ -175,7 +175,12 @@ bash "$AR" post "$RUN_DIR" "$RUN_DIR/report.md"   # ④ refreshes claude-md-audi
 ```
 
 Report: `STATE`, finding counts, and the saved copy (`~/.claude/da-tools/claude-md-audit-reports/<ts>.md`, mode 600, newest 12 kept).
-If the Agent call itself errors, skip ③④ and report "audit engine unavailable (ENGINE_UNAVAILABLE)" — no marker refresh.
+`post` prepends a header to the copy (state, read_evidence, residuals RE/RF/RH; on `AUDITOR_CHANGED` also "신뢰 불가 — AUDITOR_CHANGED" = untrusted); the agent's text follows unchanged.
+If the Agent call itself errors, skip ③④, run the command below, then report "audit engine unavailable (ENGINE_UNAVAILABLE)" — no marker refresh:
+
+```bash
+bash "$AR" fail "$RUN_DIR" "<agent error text>"   # records ENGINE_UNAVAILABLE in the jsonl · never touches claude-md-audit-last
+```
 
 ### Update part — skill update check
 
@@ -196,7 +201,7 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 | `READY` | pre | checks passed, run dir created | none |
 | `AUDITOR_SHADOWED` | pre | more than one definition with that name, or the only one is outside the user level (`~/.claude/agents/`) — searches project `.claude/agents/` (subfolders included, from cwd up to `/`). Plugin folders and `additionalDirectories` cannot shadow the name and are not searched | none |
 | `AUDITOR_MISCONFIGURED` | pre | no definition, frontmatter keys ≠ {name, description, tools, model}, `tools` ≠ `Read, Grep, Glob`, `model` ∉ {opus, sonnet, inherit} | none |
-| `ENGINE_UNAVAILABLE` | pre | procedure file missing (or the Agent call errors) | none |
+| `ENGINE_UNAVAILABLE` | pre · fail | procedure file missing (pre), or the Agent call errors (`fail`) | none |
 | `SCOPE_UNRESOLVED` | pre | `CLAUDE_MEMORY_DIR` unset or its `MEMORY.md` missing (incl. a missing scope file) | none |
 | `AUDITOR_CHANGED` | post | definition sha256 differs from pre or file missing — report kept but untrusted | none |
 | `SCOPE_CHANGED_DURING_AUDIT` | post | a scope file's sha256 differs from pre | none |
@@ -221,7 +226,7 @@ evidence it opened each file; neither full reading nor review quality is proven.
 
 - **RA** Relies on Claude Code honoring the `tools` allowlist (documented) — `pre` catches an edited definition, not a harness regression.
 - **RB** The user-typed `/doctor prompt-audit` full run executes in the main session with all tools (auto mode) — protection covers only this routine.
-- **RC** The auditor cannot spawn sub-auditors — the monthly scope must fit one agent; truncation shows as AUDIT_INCOMPLETE.
+- **RC** The auditor cannot spawn sub-auditors — the monthly scope must fit one agent; truncation shows as AUDIT_INCOMPLETE; growing D1-scope requires re-running V8 (one real auditor run over the whole scope confirming REPORTED) — the `rules/*.md` glob is re-expanded at every `pre`, so the scope grows without anyone widening it on purpose.
 - **RD** The main session writes the report, jsonl and both markers (fixed paths outside the audit scope).
 - **RE** Model-orchestrated — the script cannot prove the saved text came from the auditor; finding counts are the auditor's own.
 - **RF** Session-only `--add-dir` / `/add-dir` / `--agents` definitions are not visible on disk, so `pre` cannot see them — run in a session started without those flags.
