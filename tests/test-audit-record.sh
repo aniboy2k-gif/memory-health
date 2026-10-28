@@ -89,11 +89,15 @@ $H/.claude/skills/memory-health/SKILL.en.md
 $PROJ/CLAUDE.md"
 [ "$(cat "$RUN/manifest.txt")" = "$want" ] && ok "manifest = absolute paths in the fixed order" || no "manifest wrong: $(cat "$RUN/manifest.txt")"
 grep -q "$(printf '\t')" "$RUN/manifest.txt" && no "manifest leaks tsv fields" || ok "manifest has paths only"
-lc(){ awk -F'\t' -v p="$1" '$1==p{print $3}' "$RUN/private.tsv"; }
-[ "$(lc "$H/.claude/rules/c.md")" = "0" ] && ok "line count: empty file = 0" || no "empty file count $(lc "$H/.claude/rules/c.md")"
-[ "$(lc "$H/.claude/rules/b.md")" = "1" ] && ok "line count: single line without newline = 1" || no "single line count $(lc "$H/.claude/rules/b.md")"
-[ "$(lc "$H/.claude/rules/d.md")" = "3" ] && ok "line count: no final newline = 3" || no "no-final-newline count $(lc "$H/.claude/rules/d.md")"
+# #46 (design :166 A5-C2): pre stores no line count anywhere — private.tsv = path + sha256 only
+bad_tsv="$(awk -F'\t' 'NF!=2' "$RUN/private.tsv")"
+n_tsv="$(awk 'END{print NR}' "$RUN/private.tsv")"
+[ -z "$bad_tsv" ] && [ "$n_tsv" = "9" ] && ok "private.tsv = path<TAB>sha256 only (no line-count column)" || no "private.tsv has other columns: [$bad_tsv] rows=$n_tsv"
 [ -s "$RUN/definition.sha256" ] && ok "definition.sha256 written" || no "definition.sha256 missing"
+# #5b (design :60): the procedure file's sha256 is recorded at pre too
+PROC="$H/.claude/skills/claude-api/shared/prompt-audit.md"
+sha(){ shasum -a 256 "$1" | awk '{print $1}'; }
+[ "$(awk 'NR==1{print $1}' "$RUN/procedure.sha256" 2>/dev/null)" = "$(sha "$PROC")" ] && ok "procedure.sha256 written with the procedure's sha256" || no "procedure.sha256 missing/wrong"
 [ ! -f "$ST/claude-md-audit-last" ] && ok "pre writes no marker" || no "pre wrote a marker"
 
 # cwd == HOME's .claude CLAUDE.md is not listed twice
@@ -173,8 +177,33 @@ tail -1 "$MH_AUDIT_JSONL" | jq -e '.part=="audit" and .state=="REPORTED" and .re
   && ok "jsonl record fields" || no "jsonl record wrong: $(tail -1 "$MH_AUDIT_JSONL")"
 saved="$(ls "$ST/claude-md-audit-reports/"*.md 2>/dev/null | head -1)"
 [ -n "$saved" ] && [ "$(ls -l "$saved" | cut -c1-10)" = "-rw-------" ] && ok "report copy saved with mode 600" || no "report copy missing/mode"
+# #5b (design :115): the audit record carries auditor_sha256 and procedure_sha256
+tail -1 "$MH_AUDIT_JSONL" | jq -e --arg a "$(sha "$DEF")" --arg p "$(sha "$PROC")" '.auditor_sha256==$a and .procedure_sha256==$p' >/dev/null \
+  && ok "jsonl record has auditor_sha256 + procedure_sha256" || no "sha fields missing: $(tail -1 "$MH_AUDIT_JSONL")"
+# #11 (design :64,:150,:164,:191): saved copy = header block from post + the auditor's text unchanged
+HDR1="# [memory-health 감사 보고서 사본 — 머리말]"
+saved="$(printf '%s\n' "$OUT" | sed -n 's/^REPORT=//p')"
+[ "$(head -1 "$saved" 2>/dev/null)" = "$HDR1" ] && ok "saved copy starts with the post header" || no "saved copy first line: $(head -1 "$saved" 2>/dev/null)"
+grep -q '^> RE — ' "$saved" && grep -q '^> RF — ' "$saved" && grep -q '^> RH — ' "$saved" \
+  && ok "header states the RE, RF and RH residuals" || no "header residual markers missing"
+grep -q '^> 상태: REPORTED$' "$saved" && grep -q '^> read_evidence: last_line_match$' "$saved" \
+  && ok "header states the state and read_evidence" || no "header state/read_evidence missing"
+grep -q '신뢰 불가' "$saved" && no "REPORTED header wrongly says untrusted" || ok "REPORTED header has no untrusted line"
+tail -c "$(wc -c < "$T/report.md" | tr -d ' ')" "$saved" | cmp -s - "$T/report.md" \
+  && ok "the auditor's text follows the header unchanged" || no "auditor text altered in saved copy"
 
 reset_marker(){ rm -f "$ST/claude-md-audit-last"; }
+
+# #46: post counts lines itself — the logical-count edge cases decide the verdict
+reset_marker; run_pre; R="$RUN"
+make_report "$R" "$T/report.md"
+grep -q "rules/c.md last_line=0$" "$T/report.md" && grep -q "rules/b.md last_line=1$" "$T/report.md" && grep -q "rules/d.md last_line=3$" "$T/report.md" \
+  && ok "stub report states empty=0, single-line-no-newline=1, no-final-newline=3" || no "stub counts unexpected"
+OUT="$(bash "$SCRIPT" post "$R" "$T/report.md" --dry-run 2>&1)"
+[ "$(state_of "$OUT")" = "REPORTED" ] && ok "post's own count accepts those values -> REPORTED" || no "edge-case counts rejected [$OUT]"
+sed 's#\(rules/d.md last_line=\)3$#\12#' "$T/report.md" > "$T/r3"
+OUT="$(bash "$SCRIPT" post "$R" "$T/r3" --dry-run 2>&1)"
+[ "$(state_of "$OUT")" = "AUDIT_INCOMPLETE" ] && ok "newline count (wc -l style 2) for a no-final-newline file -> AUDIT_INCOMPLETE" || no "wc-l count accepted [$OUT]"
 
 reset_marker; run_pre; R="$RUN"
 make_report "$R" "$T/report.md" "$H/.claude/rules/d.md"
@@ -199,6 +228,11 @@ printf '\n' >> "$DEF"
 OUT="$(bash "$SCRIPT" post "$R" "$T/report.md" 2>&1)"
 [ "$(state_of "$OUT")" = "AUDITOR_CHANGED" ] && ok "definition edited between pre and post -> AUDITOR_CHANGED" || no "expected AUDITOR_CHANGED [$OUT]"
 [ ! -f "$ST/claude-md-audit-last" ] && ok "AUDITOR_CHANGED writes no marker" || no "marker written on AUDITOR_CHANGED"
+# #58 (design :191): the report copy is kept, its header says untrusted
+saved="$(printf '%s\n' "$OUT" | sed -n 's/^REPORT=//p')"
+[ -n "$saved" ] && [ -f "$saved" ] && ok "AUDITOR_CHANGED keeps the report copy" || no "AUDITOR_CHANGED copy missing [$OUT]"
+grep -q '신뢰 불가 — AUDITOR_CHANGED' "$saved" 2>/dev/null && grep -q '^> 상태: AUDITOR_CHANGED$' "$saved" \
+  && ok "AUDITOR_CHANGED header says 신뢰 불가 — AUDITOR_CHANGED" || no "untrusted marking missing in copy"
 write_def
 
 # known limitation (A8-C1): changed-and-restored definition passes the byte comparison
@@ -219,6 +253,21 @@ reset_marker; run_pre; R="$RUN"; make_report "$R" "$T/report.md"
 i=0; while [ $i -lt 14 ]; do bash "$SCRIPT" post "$R" "$T/report.md" >/dev/null 2>&1; i=$((i+1)); done
 n="$(ls "$ST/claude-md-audit-reports/" | grep -c '\.md$')"
 [ "$n" = "12" ] && ok "reports kept: newest 12" || no "reports kept: $n"
+
+echo "-- fail (Agent call error) --"
+# #35 (design :114, :118): an Agent error is recorded as ENGINE_UNAVAILABLE; the marker is never touched
+run_pre; R="$RUN"
+printf '1234\n' > "$ST/claude-md-audit-last"; cp "$ST/claude-md-audit-last" "$T/marker.keep"
+OUT="$(bash "$SCRIPT" fail "$R" "Agent tool returned an error: overloaded" 2>&1)"; RC=$?
+[ "$(state_of "$OUT")" = "ENGINE_UNAVAILABLE" ] && [ "$RC" -ne 0 ] && ok "fail -> STATE=ENGINE_UNAVAILABLE, non-zero exit" || no "fail state [$OUT] rc=$RC"
+tail -1 "$MH_AUDIT_JSONL" | jq -e --arg r "$R" '.part=="audit" and .state=="ENGINE_UNAVAILABLE" and .step=="agent" and .run_dir==$r and (.reason|test("overloaded"))' >/dev/null \
+  && ok "fail appends the ENGINE_UNAVAILABLE record with reason" || no "fail record: $(tail -1 "$MH_AUDIT_JSONL")"
+cmp -s "$ST/claude-md-audit-last" "$T/marker.keep" && ok "fail leaves an existing claude-md-audit-last byte-identical" || no "fail touched the marker"
+rm -f "$ST/claude-md-audit-last"
+bash "$SCRIPT" fail "$R" "another error" >/dev/null 2>&1
+[ ! -f "$ST/claude-md-audit-last" ] && ok "fail never creates claude-md-audit-last" || no "fail created the marker"
+OUT="$(bash "$SCRIPT" fail "$R" 2>&1)"; RC=$?
+[ "$RC" -eq 64 ] && ok "fail without a reason -> usage error 64" || no "fail without reason rc=$RC"
 
 echo "-- update-check --"
 STUB="$T/stub.sh"
@@ -266,6 +315,25 @@ t1="$(date +%s)"
 
 OUT="$(MH_UPDATE_CMD="bash '$STUB' 0 0 64" bash "$SCRIPT" update-check --dry-run 2>&1)"
 [ "$(state_of "$OUT")" = "UPDATE_CHECK_PASS" ] && [ ! -f "$UM" ] && ok "update-check --dry-run -> PASS without marker" || no "update dry-run [$OUT]"
+
+# #53 (update.py:255) + #37 (design :120): one result of each failing status + one local-custom
+printf '%s\n' \
+  'import json' \
+  'sts = ["fetch-error", "local-missing", "config-error", "no-url", "local-custom", "update-available"] + ["up-to-date"] * 4' \
+  'res = [{"skill": "k%02d" % i, "status": st, "upstream_type": "github"} for i, st in enumerate(sts)]' \
+  'fe = sum(r["status"] in ("fetch-error", "local-missing", "config-error", "no-url") for r in res)' \
+  's = {"total": len(res), "up_to_date": sts.count("up-to-date"), "update_available": 1,' \
+  '     "local_custom": sts.count("local-custom"), "fetch_error": fe}' \
+  'print(json.dumps({"results": res, "summary": s}))' > "$T/stub4.py"
+OUT="$(MH_UPDATE_CMD="python3 '$T/stub4.py'" bash "$SCRIPT" update-check 2>&1)"
+[ "$(state_of "$OUT")" = "UPDATE_CHECK_PASS" ] && ok "four failing statuses of 10 -> UPDATE_CHECK_PASS" || no "stub4 state [$OUT]"
+tail -1 "$MH_AUDIT_JSONL" | jq -e '.fetch_error==4 and (.failed|length)==.fetch_error and .failed==["k00","k01","k02","k03"]' >/dev/null \
+  && ok "failed list = the 4 statuses update.py counts as fetch_error (length == fetch_error)" || no "failed vs fetch_error: $(tail -1 "$MH_AUDIT_JSONL")"
+[ "$(jq -c '.failed' "$UF" 2>/dev/null)" = '["k00","k01","k02","k03"]' ] && ok "skill-update-failed.json lists all 4" || no "failed.json: $(cat "$UF" 2>/dev/null)"
+tail -1 "$MH_AUDIT_JSONL" | jq -e '.local_custom==1' >/dev/null && ok "update record has local_custom from summary" || no "local_custom: $(tail -1 "$MH_AUDIT_JSONL")"
+printf '%s\n' 'import json' 'print(json.dumps({"results": [], "summary": {"total": 3, "up_to_date": 3, "fetch_error": 0}}))' > "$T/stub5.py"
+MH_UPDATE_CMD="python3 '$T/stub5.py'" bash "$SCRIPT" update-check >/dev/null 2>&1
+tail -1 "$MH_AUDIT_JSONL" | jq -e '.local_custom==0' >/dev/null && ok "local_custom absent from summary -> 0" || no "local_custom default: $(tail -1 "$MH_AUDIT_JSONL")"
 
 OUT="$(MH_UPDATE_CMD="bash '$STUB' 0 0 64 --apply" bash "$SCRIPT" update-check 2>&1)"
 [ "$(state_of "$OUT")" = "UPDATE_CHECK_FAILED" ] && ok "a command containing --apply is refused" || no "--apply not refused [$OUT]"

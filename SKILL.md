@@ -224,7 +224,12 @@ bash "$AR" post "$RUN_DIR" "$RUN_DIR/report.md"   # ④ REPORTED 일 때만 clau
 ```
 
 결과 보고: `STATE`, findings 개수, 보고서 사본 경로(`~/.claude/da-tools/claude-md-audit-reports/<ts>.md`, mode 600, 최근 12개 보존).
-에이전트 호출 자체가 오류로 끝나면 ③④를 하지 않고 "감사 엔진 사용 불가(ENGINE_UNAVAILABLE)"로 보고한다 — 기록 갱신 없음.
+사본 맨 앞에는 `post` 가 머리말(상태·read_evidence·잔여 위험 RE·RF·RH, `AUDITOR_CHANGED` 면 「신뢰 불가 — AUDITOR_CHANGED」)을 붙이고, 그 아래는 에이전트 원문 그대로다.
+에이전트 호출 자체가 오류로 끝나면 ③④를 하지 않고 아래를 실행한 뒤 "감사 엔진 사용 불가(ENGINE_UNAVAILABLE)"로 보고한다 — 기록 갱신 없음:
+
+```bash
+bash "$AR" fail "$RUN_DIR" "<에이전트 오류 내용>"   # jsonl 에 ENGINE_UNAVAILABLE 기록 · claude-md-audit-last 는 건드리지 않음
+```
 
 ### 업데이트 부분 — 스킬 업데이트 점검
 
@@ -245,7 +250,7 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 | `READY` | pre | 검사 통과, 실행 디렉터리 생성 | 없음 |
 | `AUDITOR_SHADOWED` | pre | 같은 이름의 정의가 둘 이상, 또는 유일한 정의가 사용자 수준(`~/.claude/agents/`) 밖 — 프로젝트 `.claude/agents/`(하위 폴더 포함, cwd 부터 `/` 까지) 검색. 플러그인 폴더·`additionalDirectories` 는 이름이 겹쳐도 그림자가 아니라 검색 안 함 | 없음 |
 | `AUDITOR_MISCONFIGURED` | pre | 정의 없음, frontmatter 키가 {name, description, tools, model} 와 다름, `tools` ≠ `Read, Grep, Glob`, `model` ∉ {opus, sonnet, inherit} | 없음 |
-| `ENGINE_UNAVAILABLE` | pre | 절차 파일 없음 (또는 에이전트 호출 오류) | 없음 |
+| `ENGINE_UNAVAILABLE` | pre · fail | 절차 파일 없음 (pre), 또는 에이전트 호출 오류 (`fail`) | 없음 |
 | `SCOPE_UNRESOLVED` | pre | `CLAUDE_MEMORY_DIR` 미설정 또는 그 `MEMORY.md` 없음 (범위 파일 누락 포함) | 없음 |
 | `AUDITOR_CHANGED` | post | 정의 파일 sha256 이 pre 와 다름 또는 파일 없음 — 보고서는 남기되 신뢰 불가 | 없음 |
 | `SCOPE_CHANGED_DURING_AUDIT` | post | 범위 파일 sha256 이 pre 와 다름 | 없음 |
@@ -274,7 +279,7 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 
 - **RA** Claude Code 가 `tools` 허용 목록을 지킨다는 데 기댄다(문서화된 동작) — `pre` 는 정의 편집을 잡을 뿐 하네스 회귀는 못 잡는다.
 - **RB** 사용자가 직접 치는 `/doctor prompt-audit` 전체 실행은 본 세션에서 모든 도구로 돈다(auto 모드) — 보호는 이 루틴에만 적용된다.
-- **RC** 감사 에이전트는 하위 감사자를 띄울 수 없다 — 월간 범위가 한 에이전트에 맞아야 하고, 잘리면 AUDIT_INCOMPLETE 로 드러난다.
+- **RC** 감사 에이전트는 하위 감사자를 띄울 수 없다 — 월간 범위가 한 에이전트에 맞아야 하고, 잘리면 AUDIT_INCOMPLETE 로 드러난다. 감사 범위(D1-scope)가 커지면 V8(범위 전체를 실제 감사 에이전트로 한 번 돌려 REPORTED 를 확인하는 실행)을 다시 돌려야 한다 — `rules/*.md` 는 `pre` 때마다 다시 펼쳐지므로 범위는 누가 일부러 늘리지 않아도 커진다.
 - **RD** 보고서·jsonl·두 기록은 본 세션이 쓴다(감사 범위 밖의 고정 경로).
 - **RE** 모델이 진행을 조율한다 — 저장된 글이 감사 에이전트에게서 왔음을 스크립트가 증명하지 못하고, findings 개수는 에이전트 자신의 것이다.
 - **RF** 세션 한정 `--add-dir`·`/add-dir`·`--agents` 정의는 디스크에 보이지 않아 `pre` 가 못 본다 — 그런 플래그 없이 시작한 세션에서 실행한다.
