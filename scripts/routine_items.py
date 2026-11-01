@@ -155,6 +155,14 @@ def load_ledger():
     except FileNotFoundError:
         return [], False, False
     rows, unknown, torn = [], False, False
+    cut = data.rfind(b"\n") + 1
+    body = [x for x in data[:cut].split(b"\n") if x.strip()]
+    try:  # fast path: every complete line at once (peek's 1 s budget); any doubt -> per-line path below
+        fast = json.loads(b"[" + b",".join(body) + b"]") if body else []
+        if all(isinstance(r, dict) for r in fast) and not data[cut:].strip():
+            return fast, False, False
+    except ValueError:
+        pass
     lines = data.split(b"\n")
     for i, raw in enumerate(lines):
         if not raw.strip():
@@ -592,8 +600,10 @@ def _peek_overdue(f, open_ids, t, iv):
         if e is not None:
             ages.append((t - e) / 86400 - iv)
     od = [int(a) + iv for a in ages if a > 7]
-    oldest = [t - (parse_iso(f[i]["first_ts"]) or t) for i in open_ids]
-    od_items = [int(a / 86400) for a in oldest if a > 30 * 86400]
+    # one parse of the earliest first_ts (ISO-8601 'Z' strings sort chronologically) — peek's 1 s budget
+    first = min((f[i]["first_ts"] for i in open_ids if isinstance(f[i]["first_ts"], str)), default=None)
+    age = t - (parse_iso(first) or t) if first else 0
+    od_items = [int(age / 86400)] if age > 30 * 86400 else []
     return od, od_items
 
 
