@@ -201,8 +201,24 @@ mrdc_audit_notice() {
   return 0
 }
 
+# Routine peek segment (CSR #2491): runs first in hook mode, before any early exit of the other
+# segments. Silent when peek prints nothing and exits 0; any non-zero exit (crash, traceback,
+# 1 s overrun = 3) prints exactly one FAILED line, so a broken peek is never silent.
+# MH_PYTHON (tests) — default /usr/bin/python3, the hook runtime.
+mrdc_peek_segment() {
+  local out rc
+  out="$("${MH_PYTHON:-/usr/bin/python3}" "$HERE/routine_items.py" peek 2>/dev/null)"; rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  [ "$rc" -eq 0 ] || echo "routine peek FAILED rc=$rc"
+  return 0
+}
+
 mrdc_main() {
   local mode="${1:-hook}"
+  case "$mode" in
+    --acknowledge|--diff|--json|--check) ;;
+    *) mrdc_peek_segment ;;
+  esac
 
   # H-1 acknowledge: user confirms intentional edits -> re-baseline (mutating).
   if [ "$mode" = "--acknowledge" ]; then

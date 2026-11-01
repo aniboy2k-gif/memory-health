@@ -164,9 +164,14 @@ model: opus (reason: audit)
 Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
 to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
 <MANIFEST>
+Do not report these again (dismissed earlier, path | quote): <DO_NOT_REPORT>
+Emit one `FINDING <json>` line per finding (one-line JSON object with keys sev, path, line, quote, summary;
+quote = the offending file text verbatim, at most 120 characters, JSON-escaped), then one `FINDINGS_TOTAL <n>` line.
 End with one `COVERED: <abs path> last_line=<n>` line per path above (n = the last line number your
 Read tool showed for that file), then one `FINDINGS high=<n> medium=<n> low=<n>` line.
 ```
+
+Replace `<DO_NOT_REPORT>` with the output of `python3 "$AR_DIR/routine_items.py" do-not-report` (`none` when empty). `AR_DIR` = the folder holding `$AR`.
 
 ③ Save the agent's **full final message** to `$RUN_DIR/report.md` (Write — no summarizing or editing).
 
@@ -213,6 +218,74 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 What `REPORTED` means: the auditor reported the last line number of every file correctly without being given it —
 evidence it opened each file; neither full reading nor review quality is proven. Finding counts are the auditor's own.
 `--dry-run` (post, update-check) writes no marker, jsonl line or saved report; it only prints the record.
+
+### Observe → ingest → dispose (`/memory-health routine`, CSR #2491)
+
+So that a run never ends at "audit done, finished": everything the routine finds becomes a **ledger item**, and a run ends only when
+every item has a **disposition**. Tool = `scripts/routine_items.py` (stdlib, `/usr/bin/python3` 3.9). Local state folder `$MH_LOCAL_DIR`
+(default: `memory-health-local/` in the Claude config folder, a real folder, not a symlink) — ledger `items.jsonl` (append-only single record) ·
+this machine's channel list `channels.json` (never committed to a public repo) · part records `parts.jsonl`·`part-<C~F>-last` · audit scope progress `audit-coverage.json`.
+
+**Who and when**: ① detect = the existing SessionStart hook `memory-rules-drift-check.sh` calls `routine_items.py peek` first, every session
+(local reads only, 1 s budget, at most 600 chars — open item count, due parts, new channel events). A non-zero peek exit prints one line
+`routine peek FAILED rc=<n>`. If the hook itself does not run, a second SessionStart command `peek-watchdog.sh` (installed by **copy** into the
+state folder) prints one line `routine detector stale`. ② ingest + dispose = the interactive session that receives the notice runs the following
+before other work (not in `claude -p` — its hooks see `CLAUDE_CODE_ENTRYPOINT=sdk-cli` (interactive = `cli`, measured), so peek prints only the count line there).
+
+```bash
+RI="python3 $HOME/.claude/skills/memory-health/scripts/routine_items.py"   # adjust to the install location
+$RI start [--force]          # take the routine lease + run row (due_parts); refused while another session used it in the last 30 min
+# only the due parts (--force = all six):
+#  P-A fixed-scope audit  — the 4 steps above → $RI ingest-audit --run-dir "$RUN_DIR" --part A
+#  P-B skill updates      — bash "$AR" update-check > "$T/upd.txt"; $RI ingest-update --file "$T/upd.txt"
+#  P-C update channels    — $RI scan-channels        (builtin plugins channel + log_lines/stamp_age channels from channels.json)
+#  P-D install diagnosis  — $RI ingest-doctor        (claude doctor, read-only, 60 s cap)
+#  P-E rolling full audit — $RI plan-shards → per shard: pre --shard <manifest> → auditor → post → ingest-audit --part E → cover --run-dir … --shard N
+#                           (an AUDIT_INCOMPLETE shard: plan-shards --split N halves it, retried once)
+#  P-F unused extensions  — $RI scan-unused          (reads only the skillUsage/pluginUsage keys of ~/.claude.json — it also holds credentials)
+#  a part that could not run at all: $RI part-fail --part X --reason "<why>"
+$RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
+```
+
+- P-E scope = the official `/doctor prompt-audit` default scope (CLAUDE.md, rules, skills, commands, agents, output-styles in the config folder) plus,
+  for each root in `channels.json` `project_roots`, its CLAUDE.md, CLAUDE.local.md, AGENTS.md and `.claude/{rules,skills,commands,agents,output-styles}`.
+  600,000 chars a month (8 shards of 75,000); at least 300,000 go to never-audited then oldest-audited files, the rest to changed files. Files larger than
+  75,000 chars are split into line-range chunks covered over several months. `plan-shards` prints the never-audited count and the maximum audit age every
+  run; a project root found under `discover_dirs` (depth 2) but not listed, or a listed root that is missing, becomes an `unknown` item.
+- A chunk (`path#L<start>-<end>`) must report its given end line in `COVERED`, so its "opened it" evidence is weaker than a whole file's (the range is told).
+
+**Dispose** — `$RI dispose <id>... --disp <kind> …` (several ids at once; if any violates a rule nothing is written):
+
+| disposition | needs | not accepted when |
+|---|---|---|
+| `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote · `part_failed` only with the `ts` of a later PASS row of the same run |
+| `task` | `--ref "CSR #N"` — that post's body or a comment must contain the item id verbatim | board unreachable |
+| `dismissed` | `--reason` ≥ 20 chars | allowed kinds only: audit finding (not high), update-available, unused-extension, plugin-version-changed, unclassified. An audit-finding dismissal is bound to the file's sha256 and reopens when the file changes |
+| `deferred` | all of `--goal --deadline (YYYY-MM-DD, within 90 days) --method --revert` | once per item · not for sev=high |
+| `verified` | `--reason` with evidence (command + output line) ≥ 20 chars | `unknown` and `unobserved_plugin` cannot be closed by a session — the next scan must re-read the source; then the tool writes `fixed recheck:<run>` |
+
+| item kind | what the session does |
+|---|---|
+| audit finding high | `fixed` or `task` in the same session |
+| audit finding medium/low | `fixed` in this batch, `dismissed` with a reason, or `deferred` |
+| fix in claude-forge / memory-health / skill-advisor | one worktree and one PR per repo; merge approval asked once at the end of the run |
+| fix in personal local files | direct edit after a backup |
+| owner-only (money, permission, credentials, irreversible, taste) · doctor permission-rule warning | `task` into this month's follow-up CSR, tagged `waiting` |
+| skill update available | read the upstream diff; `update.py <skill> --apply` in a claude-forge worktree + PR, or `dismissed` (local divergence on purpose) |
+| plugin version changed | check `claude plugin list --json` shows it enabled without errors → `verified` |
+| auto-update marketplace not refreshed for > 14 days | `claude plugin marketplace update <name>`, re-check, record |
+| `unobserved_plugin` (auto-update off + no upstream observation in 45 days) | add an observation rule to an upstream-checking channel or turn auto-update on — the next scan closes it |
+| `runner-stale` | diagnose with `launchctl list`, the log and rc; fix if no sudo is needed, else owner `task` |
+| `part_failed` | re-run the part in the same run → PASS → `fixed` (that row's ts). Otherwise `task` — the run ends with exit 4 (not complete) and the part is due again next session |
+| `cursor_reset` | read the log from the start (and the replaced file if any), ingest missed events, `verified` |
+| `unclassified` | extend the channel's event/ignore regexes and `verified` (evidence = the regex), or `dismissed` |
+| `orphaned_task`, `unlinked_task` | dispose again — a new `task`, or add an id comment to that CSR |
+
+- **At most one follow-up CSR per month** ("월간 루틴 YYYY-MM 후속", created only by the lease holder after searching for the same title) — never one CSR per item.
+- **Completion**: done **only when** `status --check-refs --run <latest run_id>` exits **0** — 1 open items · 2 ledger unknown / overdue deferral / refs unchecked / a due part without PASS · 4 blocked, handed to a follow-up (not complete). The report ends with that STATUS line.
+- **Later versions**: no per-version observation items — the channel checks are permanent (peek every session + monthly ingest).
+- **Public-repo boundary**: before a push/PR to memory-health or skill-advisor run `$RI boundary-check --repo <repo> [--body <PR body file>]` — gitleaks + the deny list (`boundary-deny.txt`, regenerated by every `scan-channels`) + whole-word project root names. Blocks when the list is absent or empty, gitleaks errors, or no base commit can be found.
+- `channels.json` keys: `channels[]` (`id`, `type`=`log_lines`|`stamp_age`, `path`, `events[{re,kind,sev,observe,plugin}]`, `ignore[]`, `stale_path`, `max_age_h`) · `required_ids[]` · `project_roots[]` · `discover_dirs[]` · `board_post_url` (`{n}` = post number) · `gitleaks_cmd` (optional).
 
 ### What is covered (Covers — Round-8 wording)
 

@@ -178,10 +178,11 @@ validate_definition() {
 }
 
 cmd_pre() {
-  local cwd="$PWD"
+  local cwd="$PWD" shard=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --cwd) [ $# -ge 2 ] || die_usage; cwd="$2"; shift 2 ;;
+      --shard) [ $# -ge 2 ] || die_usage; shard="$2"; shift 2 ;;
       *) die_usage ;;
     esac
   done
@@ -214,6 +215,17 @@ cmd_pre() {
   [ -f "$PROCEDURE" ] && [ -r "$PROCEDURE" ] || pre_fail ENGINE_UNAVAILABLE "procedure file missing: $PROCEDURE"
 
   # 4. SCOPE_UNRESOLVED
+  local list="" f
+  if [ -n "$shard" ]; then
+    # P-E shard (CSR #2491): manifest = the plan-shards list; `path#L<s>-<e>` = a line-range chunk
+    [ -f "$shard" ] || pre_fail SCOPE_UNRESOLVED "shard manifest missing: $shard"
+    while IFS= read -r f || [ -n "$f" ]; do
+      [ -n "$f" ] || continue
+      [ -f "${f%%#L*}" ] || pre_fail SCOPE_UNRESOLVED "shard file missing: ${f%%#L*}"
+      list="$list$f$NL"
+    done < "$shard"
+    [ -n "$list" ] || pre_fail SCOPE_UNRESOLVED "shard manifest empty: $shard"
+  else
   [ -n "${CLAUDE_MEMORY_DIR:-}" ] || pre_fail SCOPE_UNRESOLVED "CLAUDE_MEMORY_DIR unset"
   local mem="$CLAUDE_MEMORY_DIR/MEMORY.md"
   [ -f "$mem" ] || pre_fail SCOPE_UNRESOLVED "MEMORY.md missing: $mem"
@@ -225,7 +237,6 @@ cmd_pre() {
   done
 
   # manifest (absolute paths only, fixed order)
-  local list="" f
   list="$gclaude
 "
   for f in "$MH_HOME/.claude/rules/"*.md; do
@@ -247,6 +258,7 @@ $ske
     unset IFS
     [ "$dup" = "0" ] && list="$list$cwd/CLAUDE.md$NL"
   fi
+  fi
 
   # READY: write the run dir
   mkdir -p "$RUNS_DIR" || pre_fail SCOPE_UNRESOLVED "cannot create $RUNS_DIR"
@@ -261,7 +273,7 @@ $ske
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     # path + sha256 only: no line count is stored where the auditor's Read could see it (A5-C2)
-    printf '%s\t%s\n' "$f" "$(sha256_of "$f")" >> "$run/private.tsv"
+    printf '%s\t%s\n' "$f" "$(sha256_of "${f%%#L*}")" >> "$run/private.tsv"
   done < "$run/manifest.txt"
   chmod 600 "$run/manifest.txt" "$run/private.tsv"
   printf '%s  %s\n' "$(sha256_of "$USER_MATCH")" "$USER_MATCH" > "$run/definition.sha256"
@@ -327,7 +339,7 @@ cmd_post() {
   if [ -z "$state" ]; then
     while IFS="$(printf '\t')" read -r p s rest; do
       [ -n "$p" ] || continue
-      if [ ! -f "$p" ] || [ "$(sha256_of "$p")" != "$s" ]; then
+      if [ ! -f "${p%%#L*}" ] || [ "$(sha256_of "${p%%#L*}")" != "$s" ]; then
         state="SCOPE_CHANGED_DURING_AUDIT"; reason="$reason$p "
       fi
     done < "$run/private.tsv"
@@ -336,6 +348,7 @@ cmd_post() {
   # 3. AUDIT_INCOMPLETE — COVERED lines + FINDINGS
   local fh="" fm="" fl="" covered
   covered="$(mktemp "${TMPDIR:-/tmp}/mh-covered.XXXXXX")" || { echo "ERROR=mktemp failed" >&2; exit 2; }
+  [ "$dry" = "0" ] && : > "$run/findings.txt" && chmod 600 "$run/findings.txt"
   if [ -f "$report" ]; then
     local line re_cov='^COVERED: (.+) last_line=([0-9]{1,12})$'
     local re_fnd='^FINDINGS high=([0-9]{1,9}) medium=([0-9]{1,9}) low=([0-9]{1,9})$'
@@ -348,6 +361,9 @@ cmd_post() {
         printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" >> "$covered"
       elif [[ $line =~ $re_fnd ]]; then
         fh="${BASH_REMATCH[1]}"; fm="${BASH_REMATCH[2]}"; fl="${BASH_REMATCH[3]}"
+      elif [ "$dry" = "0" ] && { [ "${line#FINDING }" != "$line" ] || [ "${line#FINDINGS_TOTAL }" != "$line" ]; }; then
+        # CSR #2491: FINDING <json> / FINDINGS_TOTAL <n> lines for `routine_items.py ingest-audit`
+        printf '%s\n' "$line" >> "$run/findings.txt"
       fi
     done < "$report"
   fi
@@ -357,11 +373,16 @@ cmd_post() {
     local got bad_n
     while IFS="$(printf '\t')" read -r p s rest; do
       [ -n "$p" ] || continue
-      nl="$(line_count "$p")"
+      # a `path#L<s>-<e>` chunk must report its given end line (weaker evidence: the range is told)
+      if [ "${p%%#L*}" != "$p" ]; then nl="${p##*-}"; else nl="$(line_count "$p")"; fi
       got="$(P="$p" awk -F'\t' '$1==ENVIRON["P"]{print $2}' "$covered")"
       if [ -z "$got" ]; then missing="$missing$p
 "; continue; fi
-      bad_n="$(printf '%s\n' "$got" | awk -v want="$nl" '($1+0)!=(want+0){print; exit}')"
+      # CSR #2491 (measured): the Read tool may show one empty line after a file's final newline,
+      # so a whole newline-terminated file also accepts N+1 (still unknowable without opening it)
+      local alt="$nl"
+      if [ "${p%%#L*}" = "$p" ] && [ -s "$p" ] && [ "$(tail -c 1 "$p" | od -An -c | tr -d ' ')" = '\n' ]; then alt=$((nl + 1)); fi
+      bad_n="$(printf '%s\n' "$got" | awk -v want="$nl" -v alt="$alt" '($1+0)!=(want+0) && ($1+0)!=(alt+0){print; exit}')"
       [ -z "$bad_n" ] || missing="$missing$p
 "
     done < "$run/private.tsv"
@@ -508,7 +529,7 @@ cmd_update() {
     fi
     # the list memory-health reports: updates available and per-skill fetch errors
     jq -r '.results[]? | select((.status // "") | test("update-available|fetch-error|local-missing|config-error|no-url"))
-           | "SKILL: \(.skill // .name // "?") channel=\(.upstream_type // "?") status=\(.status // "?")"' "$out" 2>/dev/null
+           | "SKILL: \(.skill // .name // "?") channel=\(.upstream_type // "?") status=\(.status // "?") upstream=\(.upstream_hash // .latest_version // .latest // "-" | tostring | gsub("\\s"; "_"))"' "$out" 2>/dev/null
   fi
   rm -f "$out" "$err"
 

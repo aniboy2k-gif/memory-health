@@ -44,3 +44,11 @@ jobs:
           bash tests/test-memory-health-state.sh
           bash tests/test-drift-check.sh
           bash tests/test-skill-update.sh
+
+      - name: Run routine ledger tests (CSR #2491)
+        run: |
+          /usr/bin/python3 -m unittest tests/test_routine_items.py
+          /usr/bin/python3 -m unittest tests/test_routine_audit.py
+          # audit-record.sh update-check refuses to run without `timeout` (GNU coreutils; not on macOS runners)
+          brew install coreutils
+          PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH" bash tests/test-audit-record.sh
