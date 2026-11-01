@@ -1,6 +1,6 @@
 ---
 name: memory-health
-description: "Memory file health diagnosis + optimization (MEMORY.md Optimizer R1~R6 + memory/*.md Scanner + Rules Checker + periodic CLAUDE.md audit)"
+description: "Memory file health diagnosis + optimization (MEMORY.md Optimizer R1~R10 + memory/*.md Scanner + Rules Checker + periodic CLAUDE.md audit)"
 argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --with-md | --fix | --scan | --rules [--strict] | --fix --json | --fix --with-md | --scan --with-md'
 ---
 
@@ -10,7 +10,7 @@ argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --w
 > For Korean → [`SKILL.md`](SKILL.md)
 > 한국어로 사용하려면 → [`SKILL.md`](SKILL.md)
 >
-> **Language auto-detection**: Default output is English. If the conversation is in Korean, output switches to Korean automatically.
+> **Language auto-detection**: Default output is Korean (same rule as `SKILL.md`). If the conversation is in English, output switches to English automatically.
 > When the language is unclear or mixed, Korean (default) is used.
 
 > ⚠️ **[SINGLE-SESSION ONLY]** Running multiple Claude tabs simultaneously can corrupt your files.
@@ -34,26 +34,56 @@ subagent, every 30 days) and a skill update check (every 30 days, check only).
 
 ## Usage
 
+### v2 command structure (CSR #656)
+
+> **Status (P7 disposition, CSR #962, 2026-05-29)**: v2 commands run **by interpreting this SKILL procedure** — no separate dispatcher script is needed and none is planned.
+> - `catalog` and `rules` run dedicated scripts (`scripts/catalog.sh`, `scripts/check-rules.sh`)
+> - `check`, `fix` and `scan` are carried out from this SKILL procedure (Claude's interpretation)
+> - v1 commands keep working as deprecated aliases (until 2026-12-31)
+
 ```
-/memory-health          → Diagnose only (dry-run, no approval needed)
-/memory-health --fix    → Run Optimizer: trim MEMORY.md line count (one approval gate)
-/memory-health --scan   → Run Scanner: scan and split memory/*.md files (one approval gate)
-/memory-health catalog  → Build knowledge catalog: regenerate 3-axis metadata index (read-only)
-/memory-health --fix --json  → Output dry-run results as JSON (for automation/pipelines)
-/memory-health --with-md     → memory health + forced monthly routine (prompt-audit by the read-only auditor + skill update check)
+/memory-health check         → diagnosis (hook-safe — memory files never changed · writes state records, runs git fetch)
+                              exit 0=ok, 1=warn, 2=critical
+/memory-health fix [--R1...] → mutating Optimizer (R1~R10, explicit R numbers — per memory-health-rules.md)
+/memory-health scan          → Scanner (split memory/*.md, one approval)
+/memory-health rules         → Rules Checker (auto-loaded files, read-only)
+/memory-health rules --strict → exit 2 on WARN or worse
+/memory-health catalog       → knowledge catalog builder (regenerates the 3-axis metadata index)
+/memory-health fix --json    → dry-run JSON output
+/memory-health --with-md     → CLAUDE.md quality audit (combinable with every command)
 ```
 
-The default is dry-run — no files are changed.
+**Command boundary (DA C-7)**:
+- **check** = a diagnosis that never changes memory files (MEMORY.md, memory/*.md), hook-safe — safe to automate. It does run the remote check's `git fetch` and cooldown marker (②) and write the monthly routine's markers and report files (③) (RD)
+- **fix / scan / rules** = explicitly mutating or read-only — separate surfaces
+- default command = `check` (safe-side default)
+
+### v1 commands (deprecated aliases — until 2026-12-31)
+
+```
+/memory-health               → diagnosis (= v2 check)
+/memory-health --fix         → Optimizer (= v2 fix, deprecated warning)
+/memory-health --scan        → Scanner (= v2 scan, deprecated warning)
+/memory-health --rules       → Rules Checker (= v2 rules, deprecated warning)
+/memory-health --rules --strict → (= v2 rules --strict)
+/memory-health --fix --json  → (= v2 fix --json)
+/memory-health --with-md     → CLAUDE.md audit (same in v2)
+```
+
+The default is dry-run, so memory files (MEMORY.md, memory/*.md) are not changed. The remote check (②) runs `git fetch` and writes its cooldown marker (`.remote-check-last`); the monthly routine (③) writes its markers, jsonl and report files.
 
 Execution flow:
 ```
-/memory-health         → show dry-run results (no gate)
-                          → monthly routine (each part only when its own marker is due — see "Monthly routine")
+/memory-health         → ① show dry-run results (no gate)
+                          ② skill remote update check (CSR #962 — internet fetch, 4h cooldown, non-blocking)
+                          ③ monthly routine (each part only when its own marker is due — see "Monthly routine")
                              audit part: audit-record.sh pre → read-only auditor agent → post
                              update part: audit-record.sh update-check (check only, never apply)
+                          ℹ️  Rules Checker not included — use /memory-health --rules or MEMORY_HEALTH_DEFAULT_RULES=true
 /memory-health --fix   → show dry-run results → approval gate → execute
 /memory-health --scan  → show scan results    → approval gate → execute
-/memory-health --with-md → Phase A(memory health dry-run) → Phase B(forced monthly routine) → Phase C(session learnings handling)
+/memory-health --rules → run Rules Checker (no file changes, no gate)
+/memory-health --with-md → Phase A(memory health dry-run) → Phase B(forced monthly routine, even if not due) → Phase C(session learnings handling)
 ```
 
 ### --fix --json mode
@@ -101,6 +131,23 @@ touch "$MEMORY_DIR/skill-audit.log"      && echo "✅ skill-audit.log"
 > `revise-claude-md-stop.sh` and `revise-claude-md-inject.sh` are unwired (CSR #2451 A1-P4) — they are on no execution path, so they are not in this table.
 
 The hook only prints warnings. Actual edits are handled by this skill.
+
+---
+
+## Skill remote update check (default run ②, CSR #962)
+
+On the default `/memory-health` run (dry-run), checks over the internet whether the installed skill is **behind its remote (github)**. It mirrors the proven pattern of `forge-update-check.sh`.
+
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
+```
+
+- **Behavior**: `git fetch origin` (4s timeout) → compare local HEAD with the origin default branch → if behind, one advisory line ("skill update: N commits … git pull")
+- **4h cooldown**: avoids fetching on every run (`MEMORY_HEALTH_STATE_DIR/.remote-check-last`). `--force` ignores it (for tests)
+- **Non-blocking**: offline, timeout and non-git all exit 0 with no output (graceful). Safe without a network
+- **Handling the result**: report the advisory to the user as printed. Whether to apply the update is the user's decision (no automatic pull)
+
+> Separate from forge-update-check.sh (the whole framework, SessionStart) — this one covers only the memory-health **skill repo** and is part of the default `/memory-health` run.
 
 ---
 
@@ -312,8 +359,7 @@ To audit all skills, commands and agents under `~/.claude/`, the user types `/do
 ⚠ That run is **not write-protected** (RB · claude-code issue #99288: files edited with no apply request) — review the
 proposed diff before approving any apply. memory-health never runs the full scope automatically (cost).
 
-> Replaced engine: this routine used to call claude-md-improver from the claude-md-management plugin. Its code-repository
-> rubric and working-directory-only discovery never saw rules, skills, MEMORY.md or cross-file contradictions, so CSR #2450 replaced it.
+> Engine replacement history (claude-md-improver → prompt-audit, CSR #2450): [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
@@ -332,9 +378,12 @@ proposed diff before approving any apply. memory-health never runs the full scop
 ```bash
 MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR is not set'}"
 wc -l "${MEMORY_DIR}/MEMORY.md"
-wc -c "${MEMORY_DIR}/MEMORY.md"
+# character count (UTF-16 code units) — not bytes (wc -c) (CSR #1825)
+MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
+t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
+print(sum(2 if ord(c)>0xFFFF else 1 for c in t))'
 ```
-Prints the current line count and byte size.
+Prints the current line count and character count.
 
 **Step 2 — Analyze** (CSR #962: version-string grep replaced by drift-check validation)
 ```bash
@@ -349,7 +398,7 @@ bash "$DRIFT" --check || echo "⚠ rules drift detected — review guidance abov
 - **Fix B**: the `# version:` line is a human-readable secondary marker only. Integrity authority is the drift-check (axis0 canonical↔bundle / axis1 active↔base / axis2 bundle version). A version-only-bumped stale fork is caught by axis0/axis2.
 - **H-3**: the expected version is NOT hardcoded in SKILL files (removed the old `RULES_VERSION_REQUIRED`). The bundle template `# version:` is the single source.
 
-Loads rules R1–R8 and identifies optimization candidates.
+Loads rules R1–R10 (every R section of memory-health-rules.md) and identifies optimization candidates.
 No ad-hoc judgment — always apply the criteria from the rules file.
 
 **Step 3 — Propose (dry-run)**
@@ -378,15 +427,27 @@ If the backup fails, step 6 cannot proceed.
 Apply the approved changes to MEMORY.md.
 No shared state (global variables, file locks) with the Scanner handler.
 
-**Step 7 — Verify (mandatory)**
+**Step 7 — Verify (mandatory)** — line count + character count together
+
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
-if [ "$LINES" -gt 140 ]; then
-  echo "⚠ Verification failed: ${LINES} lines (target ≤ 140). Further optimization needed." >&2
+# ★ The axis is characters (UTF-16 code units), not bytes (CSR #1825 behavioral probe).
+CHARS=$(MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
+t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
+print(sum(2 if ord(c)>0xFFFF else 1 for c in t))')
+
+LINE_FAIL=0
+CHAR_FAIL=0
+[ "$LINES" -gt 140 ] && LINE_FAIL=1
+[ "$CHARS" -gt 17500 ] && CHAR_FAIL=1
+
+if [ "$LINE_FAIL" -eq 1 ] || [ "$CHAR_FAIL" -eq 1 ]; then
+  echo "⚠ Verification failed: lines=${LINES}/140 chars=${CHARS}/17500. Further optimization needed." >&2
 else
-  echo "✅ Verification passed: ${LINES} lines (target ≤ 140)"
+  echo "✅ Verification passed: lines=${LINES}/140 chars=${CHARS}/17500"
+  # cap×0.7 target line against the 200-line·25,000-char cap (our choice — not a platform authority)
   ~/.claude/skills/memory-health/scripts/memory-health-log.sh \
-    "F3" "MEMORY.md optimized" "${BEFORE} lines" "${LINES} lines"
+    "F3" "MEMORY.md optimized" "${BEFORE} lines" "${LINES} lines/${CHARS} chars"
 fi
 ```
 
@@ -416,7 +477,7 @@ fi
 ### Prerequisites
 - Scan target: `memory/*.md` (excluding MEMORY.md)
 - Measurement: character count via Python `len()` (not bytes)
-- Threshold: files exceeding 5,000 characters
+- Threshold: files exceeding 10,000 characters (aligned with the Phase F per-file cap of 10,000 tokens, trader_log #199 2026-05-21)
 
 ### Steps (6 steps)
 
@@ -432,7 +493,7 @@ for f in glob.glob(f"{MEMORY_DIR}/*.md"):
         continue  # Optimizer-only file — excluded
     content = open(f, encoding="utf-8").read()
     char_count = len(content)
-    if char_count > 5000:
+    if char_count > 10000:
         results.append((f, char_count))
 results.sort(key=lambda x: x[1], reverse=True)
 for f, c in results:
@@ -502,7 +563,7 @@ Re-measure len() of each processed file. Log only on successful commit:
 ```
 
 ### Completion criteria
-- All processed files are 5,000 characters or fewer
+- All processed files are 10,000 characters or fewer (Phase F per-file cap)
 - MEMORY.md pointers updated and index consistency verified
 - Execution history recorded in skill-audit.log
 
@@ -519,6 +580,19 @@ Re-measure len() of each processed file. Log only on successful commit:
 | Phase 2 pointer update fails (Scanner) | MEMORY.md write error | part2 created, MEMORY.md outdated | `git checkout -- MEMORY.md && rm {part2-file}` |
 | len() check fails (Scanner) | \|sum − original\| > 3 | Files changed | `git checkout -- {changed files}` |
 | Audit log rotate fails | `cp` exit ≠ 0 | Logging stopped | `ls -lh "${CLAUDE_MEMORY_DIR}/skill-audit.log"` |
+| **WAL init fails (Atomicity)** | `memory-wal.sh init` exit ≠ 0 | before any change, original preserved | `memory-wal.sh list` |
+| **Uncommitted WAL found (Atomicity)** | process stopped after a change → WAL remains | mid-change — file integrity in doubt | `memory-wal.sh recover` → `rollback` → restore from `memory-backup.sh` |
+| **Journal chain break (Atomicity)** | `memory-journal.sh verify` exit ≠ 0 | log tampered or damaged — reliability in doubt | check `memory-journal.sh tail 20`, then compare with an external backup |
+| **Sidecar fingerprint mismatch (R6)** | sha256 comparison fails | the user edited directly, then re-ran the tool | normal — proceed with the change + refresh the sidecar |
+
+> **Atomicity flow (Phase C — CSR #658, 2026-05-19)**:
+> 1. `wal_id=$(memory-wal.sh init "$files" "$rules")` — prepare phase
+> 2. `memory-backup.sh` — guarantees a backup right before the change (existing behavior)
+> 3. apply the approved R rules — the actual file change
+> 4. `memory-journal.sh log <action> "$files" "$rules" "$wal_id" '{...}'` — append-only audit
+> 5. `memory-wal.sh commit "$wal_id"` — atomic completion signal (WAL deleted)
+>
+> On interruption: the WAL remains → on the next run `memory-wal.sh recover` detects it → after user confirmation, `rollback` + `git checkout` or a backup restore.
 
 ---
 
@@ -547,6 +621,97 @@ No ad-hoc judgment — never select candidates using criteria not in the rules f
 
 ---
 
+## Rules Checker: size check of auto-loaded files (`--rules`)
+
+### Prerequisites
+- The `CLAUDE_RULES_DIR` environment variable must be set to an absolute path (exit 1 if unset)
+- Setting `CLAUDE_RULES_DIR`: ① recommended — add `export CLAUDE_RULES_DIR=...` directly to a shell profile such as `~/.zshrc` · ② if you choose to save at the interactive prompt during `install.sh` (default N), `env.sh` is created under `~/.claude/da-tools/`; source it. If you skip saving, `env.sh` is not created, so use ①
+- Scan target: only `.md` files that are direct children of `CLAUDE_RULES_DIR` (subdirectories ignored)
+- No file changes (read-only) → no approval gate
+
+### Scope notice
+This feature **checks the size of MD files in the given directory**.
+It does not guarantee whether Claude Code actually loads those files.
+
+### Thresholds
+| Level | Threshold | Meaning |
+|-------|-----------|---------|
+| OK | < 20,000 chars | normal |
+| WARN | 20,000 ~ 40,000 chars | early warning (at 50% of CRITICAL) |
+| CRITICAL | > 40,000 chars | self-chosen threshold (separate from Claude Code's official warning — the official threshold scales with the model context window, CHANGELOG 2.1.169) |
+
+Threshold overrides: `CLAUDE_RULES_SIZE_WARN`, `CLAUDE_RULES_SIZE_CRITICAL` environment variables
+
+### Symlink policy
+- follow a symlink target once (max depth 20)
+- realpath() hash set for de-duplication + cycle detection (deterministic, order-independent)
+- on a cycle: print WARN + skip that entry (exit 0)
+- on exceeding the depth: print WARN + skip (exit 0)
+
+### Steps (4 steps)
+
+**Step 1 — Check the environment**
+```bash
+check CLAUDE_RULES_DIR is set → exit 1 if unset (configuration error)
+check the CLAUDE_RULES_DIR directory exists → exit 1 if missing (configuration error)
+```
+
+**Step 2 — Scan (5-second wall-clock budget)**
+Run `scripts/check-rules.sh`:
+```bash
+bash ~/.claude/skills/memory-health/scripts/check-rules.sh [--strict]
+```
+On timeout: print the files finished so far + the unprocessed files (at most 10) + exit 0
+
+**Step 3 — Output**
+```
+=== Rules Checker ===
+대상: /path/to/rules
+주의: 지정 디렉토리 MD 파일 크기 검사 — 실제 Claude Code 로딩 여부 보장 안함
+      서브디렉토리 무시 | 심볼릭 링크: follow once (최대 깊이 20)
+
+🔴 CRITICAL    45,000자  huge-rule.md
+🟡 WARN        25,000자  some-large-rule.md
+✅ OK           4,000자  small-rule.md
+
+📊 CRITICAL 1건 — 자체 임계 초과 (> 40,000자 · Claude Code 공식 경고 임계는 컨텍스트 창 비례)
+   개선 방향:
+   1. 파일 L3(핵심 요약 자동 로드) + L4(상세 온디맨드) 구조로 분리
+   2. CLAUDE.md 자동 로드에서 제외 후 온디맨드 참조로 전환
+```
+(The script prints Korean; when reporting to an English-speaking user, translate it.)
+
+**Step 4 — audit log (F5)**
+```bash
+memory-health-log.sh "F5" "rules-scan (read-only)" "CRITICAL=N" "WARN=M"
+```
+
+### Graceful failure policy
+
+| Failure type | Output level | exit code |
+|--------------|--------------|-----------|
+| CLAUDE_RULES_DIR unset | WARN + skip | **1** |
+| directory missing | WARN + skip | **1** |
+| a file fails to parse | ℹ️ skip + continue | 0 |
+| symlink cycle detected | ⚠ WARN + skip | 0 |
+| symlink depth exceeded | ⚠ WARN + skip | 0 |
+| timeout (default) | partial result ⚠ + unprocessed list | 0 |
+| timeout (--strict) | partial result ⚠ + unprocessed list | **2** |
+| WARN or worse (--strict) | that output | **2** |
+| a CRITICAL file exists | CRITICAL output | 0 (read-only) |
+
+### `--strict` mode
+For CI/CD pipelines. exit 2 on any WARN-or-worse condition.
+```bash
+bash check-rules.sh --strict
+```
+
+### Completion criteria
+- scan results printed
+- F5 entry recorded in skill-audit.log
+
+---
+
 ## Project CLAUDE.md (+ split files) size monitoring (READ-ONLY)
 
 Separate from the user MEMORY.md (the Optimizer's target), this monitors the size of **external project CLAUDE.md files and their split children** (e.g. aria, kr-ai-trader). **Read-only — it never modifies files.** Actual content optimization goes through the domain workflow (ARIA/KRIS = `/trader-task`), since MEMORY.md's caps are for personal memory and don't fit project docs (plus domain / foreign-repo boundaries).
@@ -561,15 +726,13 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 - **Graceful**: missing list / unmounted volume / zero matches = skip + exit 0 (non-blocking). `--strict` → exit 2 on WARN+ (for CI).
 - **Integration**: recommended in `/memory-health check` (default) and `--rules`. On CRITICAL, report to the user but **never auto-edit** — only point to the domain workflow.
 
-> Added 2026-06-13: aria/CLAUDE.md (37.5K chars WARN) and kr-ai-trader/CLAUDE.md (20.4K chars WARN) were outside memory-health's size management (user chose option (가)). The Optimizer is MEMORY.md-only, so this read-only monitor backfills it; glob patterns auto-include split files (user follow-up). Content reduction stays in `/trader-task`.
-
 ---
 
 ## CLAUDE.md Integration (`--with-md`)
 
 > **Prerequisite**: same as the "Monthly routine" section (procedure file + auditor definition, bundled claude-api skill on).
 
-`--with-md` can be combined with other flags: `/memory-health --with-md`, `/memory-health --fix --with-md`.
+`--with-md` can be combined with other flags: `/memory-health --with-md`, `/memory-health --fix --with-md`, `/memory-health --scan --with-md`.
 
 ### Execution flow (3 Phases)
 
@@ -645,9 +808,10 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 | Mode | Approval required | Reason |
 |------|------------------|--------|
-| dry-run (default) | No | Auto-approved scope (no file changes) |
+| dry-run (default) | No | Auto-approved scope (no memory-file changes — writes only state records and report files, RD) |
 | `--fix` | Once | MEMORY.md content changes |
 | `--scan` | Once | memory/*.md content changes |
+| `--rules` | No | read-only, no file changes |
 | `catalog` | No | read-only (creates only the two catalog/ index files, originals untouched) |
 | `--fix --json` | No | Same as dry-run, exits after JSON output |
 | `--with-md` (Phase B) | No | prompt-audit report + proposed diff only (read-only auditor agent, no file changes) |
@@ -655,8 +819,4 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 ---
 
-## CHANGELOG
-
-| Date | Change |
-|------|--------|
-| 2026-10-29 | **CSR #2450 — 30-day audit engine replaced + skill update check added**. Engine moved from claude-md-improver (claude-md-management plugin) to the bundled claude-api `prompt-audit` procedure — the read-only subagent `memory-health-prompt-auditor-ro` (tools `Read, Grep, Glob`) audits a fixed scope (global CLAUDE.md, rules, MEMORY.md, this skill's two SKILL files, cwd CLAUDE.md) and only `scripts/audit-record.sh` (pre/post/update-check) decides the state. Update check (skill-advisor `update.py --json`, never applied) with separate markers (`claude-md-audit-last`, `skill-update-check-last`). Hook narrative corrected (unwired by CSR #2451 A1-P4, plugin command denied), Phase C replaced by the G-7 step (CSR #2435 D3). Plugin name removed from the notice. |
+Change history and background: [`CHANGELOG.md`](CHANGELOG.md)
