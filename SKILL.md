@@ -1,6 +1,6 @@
 ---
 name: memory-health
-description: "메모리 파일 건강 상태 진단 + 최적화 (MEMORY.md Optimizer R1~R6 + memory/*.md Scanner + Rules Checker + CLAUDE.md 주기 감사)"
+description: "메모리 파일 건강 상태 진단 + 최적화 (MEMORY.md Optimizer R1~R10 + memory/*.md Scanner + Rules Checker + CLAUDE.md 주기 감사)"
 argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --with-md | --fix | --scan | --rules [--strict] | --fix --json | --fix --with-md | --scan --with-md'
 ---
 
@@ -36,19 +36,17 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 
 ## 사용법
 
-### v2 명령 구조 (CSR #656 DA Tier 1 C-7 정합, 2026-05-19)
+### v2 명령 구조 (CSR #656)
 
 > **상태 (P7 disposition, CSR #962, 2026-05-29)**: v2 명령은 본 SKILL.md 절차 **해석 기반으로 동작 중** — 별도 dispatcher 스크립트는 불필요하며 추가 구현 예정 없음.
 > - `catalog`·`rules`는 전용 스크립트(`scripts/catalog.sh`·`scripts/check-rules.sh`)로 실행
 > - `check`·`fix`·`scan`은 본 SKILL.md 절차로 수행 (Claude 해석)
 > - v1 명령은 deprecated alias로 계속 동작 (2026-12-31까지)
->
-> 과거 "구현은 후속 PR / Phase E+F" 대기 항목은 **종료**한다(해석 기반이 현실의 구현). 인계 md(`~/.claude/da-archive/memory-health-redesign-handoff-2026-05-19.md`)는 이력 참고용.
 
 ```
-/memory-health check         → READ-ONLY 진단 (hook-safe, 파일 변경 ❌)
+/memory-health check         → 진단 (hook-safe — 기억 파일 변경 ❌ · 상태 기록 파일·git fetch 는 있음)
                               exit 0=정상, 1=warn, 2=critical
-/memory-health fix [--R1...] → Mutating Optimizer (R1~R8, 명시 R번호) — CSR #807 R7·R8 추가
+/memory-health fix [--R1...] → Mutating Optimizer (R1~R10, 명시 R번호 — memory-health-rules.md 기준)
 /memory-health scan          → Scanner (memory/*.md 분리, 1회 승인)
 /memory-health rules         → Rules Checker (자동 로드 파일, read-only)
 /memory-health rules --strict → WARN 이상 exit 2
@@ -58,7 +56,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 ```
 
 **명령 경계 원칙 (DA C-7)**:
-- **check** = READ-ONLY, hook-safe — 자동화 안전
+- **check** = 기억 파일(MEMORY.md·memory/*.md)을 바꾸지 않는 진단, hook-safe — 자동화 안전. 단 원격 점검(②)의 `git fetch`·쿨다운 기록과 월간 루틴(③)의 기록·보고서 파일은 쓴다(RD)
 - **fix / scan / rules** = 명시적 mutating 또는 read-only — 분리된 surface
 - 기본 명령 = `check` (안전 측 default)
 
@@ -74,7 +72,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 /memory-health --with-md     → CLAUDE.md 감사 (v2 동일)
 ```
 
-기본값은 dry-run이므로 파일이 변경되지 않는다.
+기본값은 dry-run이므로 기억 파일(MEMORY.md·memory/*.md)은 변경되지 않는다. 원격 점검(②)은 `git fetch` 와 쿨다운 기록(`.remote-check-last`)을, 월간 루틴(③)은 기록·jsonl·보고서 파일을 쓴다.
 
 실행 흐름:
 ```
@@ -99,7 +97,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 {
   "status": "ok | needs_action",
   "current_lines": 0,
-  "target_lines": 180,
+  "target_lines": 140,
   "candidates": [
     { "section": "<헤더>", "current_lines": 0, "savings": 0 }
   ]
@@ -364,8 +362,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 ⚠ 이 실행은 **쓰기 보호가 없다**(RB · claude-code issue #99288: 적용 요청 없이 파일을 고친 사례) — 적용을 승인하기 전에
 제안 diff 를 반드시 검토한다. memory-health 는 이 전체 실행을 자동으로 하지 않는다(비용).
 
-> 대체된 엔진: 이전에는 claude-md-management 플러그인의 claude-md-improver 를 불렀다. 코드 저장소용 채점표에 작업 디렉터리만
-> 탐색해 규칙·스킬·MEMORY.md 와 파일 간 모순을 보지 못해 CSR #2450 으로 교체했다.
+> 엔진 교체 이력(claude-md-improver → prompt-audit, CSR #2450): [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
@@ -373,7 +370,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 
 ### 전제 조건
 - hook(memory-line-check.sh)이 **≥ 160줄 또는 ≥ 20,000문자** 경고를 발생시킨 경우에 실행 권장 (CSR #1825: 단위=문자)
-- ★ 구 서술 "한글 비율 14%+ 면 바이트가 먼저 캡 도달"(CSR #806)은 **CSR #1825 행동실측으로 반증**됐다 — 캡 단위는 문자이며 한글은 캡에서 오히려 여유를 준다. 판정은 **문자·줄** 두 축으로만 한다
+- ★ 캡 단위는 **문자**다(CSR #1825 행동실측) — 한글 비율이 높아도 바이트가 먼저 캡에 닿지 않으며, 한글은 캡에서 오히려 여유를 준다. 판정은 **문자·줄** 두 축으로만 한다
 - MEMORY.md는 Scanner(`--scan`) 스캔 대상에서 제외 (이 파일만 Optimizer 적용)
 
 ### 실행 단계 (7단계)
@@ -382,9 +379,12 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 ```bash
 MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR is not set'}"
 wc -l "${MEMORY_DIR}/MEMORY.md"
-wc -c "${MEMORY_DIR}/MEMORY.md"
+# 문자 수(UTF-16 code unit) — 바이트(wc -c)가 아니다 (CSR #1825)
+MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
+t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
+print(sum(2 if ord(c)>0xFFFF else 1 for c in t))'
 ```
-현재 줄 수와 바이트 수를 출력한다.
+현재 줄 수와 문자 수를 출력한다.
 
 **2단계 — 분석** (CSR #962: 버전 문자열 grep → drift-check 기반 정합 검증으로 교체)
 ```bash
@@ -399,7 +399,7 @@ bash "$DRIFT" --check || echo "⚠ rules 드리프트 감지 — 위 안내 확�
 - **Fix B**: `# version:` 줄은 사람이 읽는 보조 마커로만 사용. 정합의 권위는 drift-check(axis0 canonical↔번들 / axis1 활성본↔base / axis2 번들 version)에 있다. 버전만 올린 stale fork는 axis0/axis2에서 잡힌다.
 - **H-3**: 기대 버전을 SKILL.md에 하드코딩하지 않는다(과거 `RULES_VERSION_REQUIRED="1.1.0"` 제거). 번들 템플릿의 `# version:`이 단일 소스.
 
-판단 기준 **R1~R8**을 로드하여 최적화 후보를 식별한다 (R7·R8 = CSR #807 추가).
+판단 기준 **R1~R10**(memory-health-rules.md 의 R 절 전부)을 로드하여 최적화 후보를 식별한다.
 즉흥적 판단 금지 — 반드시 rules 파일의 기준을 적용한다.
 
 **3단계 — 제안 (dry-run)**
@@ -428,7 +428,7 @@ fi
 승인된 변경 사항을 MEMORY.md에 적용한다.
 Scanner 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
 
-**7단계 — 검증 (의무)** — CSR #807: 줄 수 + 바이트 동시 검증
+**7단계 — 검증 (의무)** — 줄 수 + 문자 수 동시 검증
 
 ```bash
 LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
@@ -472,11 +472,9 @@ fi
 - **게시판 #32 동기화 완료** (`sync-memory-to-board.sh` exit 0, 또는 실패 시 사용자 보고) — claude_fail #81
 - skill-audit.log에 실행 이력 기록
 
-### ★ 주의 — 한글 다수 환경 (CSR #807 전제가 **CSR #1825 에서 반증됨**)
+### ★ 주의 — 한글 다수 환경 (캡 단위 = 문자, CSR #1825)
 
-**구 서술(폐기)**: "한글 비율 14%+ 환경에서는 줄 수보다 바이트가 먼저 25KB 캡에 도달한다."
-
-**실제(행동실측, CSR #1825 · 2026-08-10)**: 캡의 단위는 **바이트가 아니라 문자(UTF-16 code unit)** 다.
+**행동실측 (CSR #1825)**: 캡의 단위는 **바이트가 아니라 문자(UTF-16 code unit)** 다. 한글이 바이트를 키워도 캡에 먼저 닿지 않는다.
 
 | 관측 | 결과 |
 |---|---|
@@ -489,7 +487,7 @@ fi
 ⇒ **한글은 바이트만 부풀릴 뿐 실제 캡에서는 오히려 여유를 준다.** 같은 의미를 한국어가 영어보다
 적은 문자로 표현하므로, 문자 캡 아래에서는 **한글이 불리하지 않다**(번역을 캡 압박으로 정당화할 수 없다).
 
-⚠ `wc -c` 로 판정하지 말 것 — 한글에서 3배로 부풀어 **거짓 경고**가 난다(실제로 2026-08-10 까지 발생 중이었다).
+⚠ `wc -c` 로 판정하지 말 것 — 한글에서 3배로 부풀어 **거짓 경고**가 난다.
 재검증 = `tests/cap-boundary-probe.sh` (행동 프로브). `strings` 재실측은 판별력이 없다 — 같은 축이기 때문이다.
 
 ---
@@ -610,7 +608,7 @@ Phase 2 (Commit):
 > **Atomicity 동작 흐름 (Phase C — CSR #658, 2026-05-19)**:
 > 1. `wal_id=$(memory-wal.sh init "$files" "$rules")` — prepare phase
 > 2. `memory-backup.sh` — 변경 직전 backup 보장 (기존 동작)
-> 3. R1~R6 적용 — 실제 파일 변경
+> 3. 승인된 R 규칙 적용 — 실제 파일 변경
 > 4. `memory-journal.sh log <action> "$files" "$rules" "$wal_id" '{...}'` — append-only audit
 > 5. `memory-wal.sh commit "$wal_id"` — atomic 완료 신호 (WAL 삭제)
 >
@@ -694,7 +692,7 @@ bash ~/.claude/skills/memory-health/scripts/check-rules.sh [--strict]
 주의: 지정 디렉토리 MD 파일 크기 검사 — 실제 Claude Code 로딩 여부 보장 안함
       서브디렉토리 무시 | 심볼릭 링크: follow once (최대 깊이 20)
 
-🔴 CRITICAL    53,400자  ai-role-assignment-core.md
+🔴 CRITICAL    45,000자  huge-rule.md
 🟡 WARN        25,000자  some-large-rule.md
 ✅ OK           4,000자  small-rule.md
 
@@ -748,8 +746,6 @@ bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
 - **임계(자 수, Rules Checker 정합)**: OK<20,000 / WARN 20,000~40,000 / CRITICAL>40,000 (env `CLAUDE_PROJECT_MD_WARN`·`CLAUDE_PROJECT_MD_CRITICAL`)
 - **graceful**: 목록 없음·볼륨 미마운트·매칭 0 = skip/경고 + exit 0 (비차단). `--strict` 시 WARN+ → exit 2 (CI용)
 - **통합**: `/memory-health check` 기본 실행과 `--rules`에 포함 권장. CRITICAL 발견 시 사용자에 보고하되 **자동 수정 금지** — 도메인 워크플로우 안내만.
-
-> 신설 근거(2026-06-13): aria/CLAUDE.md(37.5K자 WARN)·kr-ai-trader/CLAUDE.md(20.4K자 WARN)가 memory-health 크기 관리에서 누락되어 있었음(사용자 (가)안 선택). Optimizer는 MEMORY.md 전용이므로 별도 read-only 모니터로 보강. glob 패턴으로 분리 파일 자동 포함(사용자 추가 요청). 내용 축소는 `/trader-task`.
 
 ---
 
@@ -834,7 +830,7 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 | 모드 | 승인 필요 | 근거 |
 |------|----------|------|
-| dry-run (기본) | 불필요 | 자동 승인 범위 (파일 변경 없음) |
+| dry-run (기본) | 불필요 | 자동 승인 범위 (기억 파일 변경 없음 — 상태 기록·보고서 파일만 씀, RD) |
 | `--fix` | 1회 필요 | MEMORY.md 내용 변경 |
 | `--scan` | 1회 필요 | memory/*.md 내용 변경 |
 | `--rules` | 불필요 | read-only, 파일 변경 없음 |
@@ -845,11 +841,4 @@ jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "
 
 ---
 
-## CHANGELOG
-
-| 일자 | 변경 |
-|------|------|
-| 2026-10-29 | **CSR #2450 — 30일 감사 엔진 교체 + 스킬 업데이트 점검 추가**. 엔진을 claude-md-improver(claude-md-management 플러그인)에서 내장 claude-api `prompt-audit` 절차로 교체 — 읽기 전용 하위 에이전트 `memory-health-prompt-auditor-ro`(도구 `Read, Grep, Glob`)가 고정 범위(전역 CLAUDE.md·rules·MEMORY.md·이 스킬 SKILL 두 파일·cwd CLAUDE.md)를 감사하고 `scripts/audit-record.sh`(pre/post/update-check)만 상태를 정한다. 업데이트 점검(skill-advisor `update.py --json`, 적용 없음)과 기록 분리(`claude-md-audit-last`·`skill-update-check-last`). 연동 훅 서술 정정(CSR #2451 A1-P4 배선 해제·플러그인 명령 거부), Phase C 를 G-7 단계로 교체(CSR #2435 D3). 알림 문구에서 플러그인 이름 제거. |
-| 2026-08-10 | ★ **CSR #1825 — 캡의 단위가 바이트가 아니라 문자임을 행동실측으로 확정. CSR #807/#806 전제 반증**. 카나리아 8케이스: 24,899자 로드 / 25,099자 절단(경계 25,000문자) · 10,734자·31,534**바이트** 전문 로드(바이트 캡 없음) · 302줄 절단(줄 캡 200 독립) · code point 12,909 / UTF-16 25,409 절단(단위=UTF-16 code unit). 결과: 임계를 문자 체계(25,000/20,000/17,500)와 줄 체계(200/160/140)로 교체, `wc -c` 판정 폐기. 훅을 **A-7(안정 shim + 단일 구현)** 로 재설계 — 배선본은 정책을 담지 않고 이벤트 채널 계약·위임·부재 고발만 한다. `find \| head -1` 대상 결박 폐지(비결정성 실증), 대상 경로 stdout 출력(INV-3), 자기무력화 고발 SessionStart 한정. `cap-constants.env` SSOT(source 금지) + `tests/cap-boundary-probe.sh` 행동 재검증. da_verification=776(Tier 1 · Conditional Y · CRITICAL 0). |
-| 2026-05-23 | **CSR #807 — 25KB 바이트 캡 + 한글 비율 모니터링 + R7~R8 룰 추가**. memory-line-check.sh에 BYTE_COUNT + 한글 비율 측정 추가 (`CLAUDE_MEMORY_BYTE_WARN=24500` env 지원). memory-health-rules.md R7 자연어 포인터 우선 + R8 path-scoped rules 활용 신설. SKILL.md 7단계 검증을 줄 수 + 바이트 동시 검증으로 확장. rule_version 1.0.0 → 1.1.0. 한글 14%+ 환경 byte cap silent truncation 주의 박제. 근거: CSR #806 (193줄 = 25,849 bytes = 캡 249 bytes 초과 실증) + Anthropic 공식 문서 RAG (ChatGPT·Claude Web 강한 합의). |
-| 2026-05-19 | CSR #656·#658·#659·#671·#779 — R6 Sidecar Fingerprint + 재설계 Phase C·D 시리즈. |
+변경 이력·신설 근거: [`CHANGELOG.md`](CHANGELOG.md)
