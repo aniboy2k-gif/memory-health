@@ -44,3 +44,8 @@ jobs:
           bash tests/test-memory-health-state.sh
           bash tests/test-drift-check.sh
           bash tests/test-skill-update.sh
+
+      - name: Run routine ledger tests (CSR #2491)
+        run: |
+          /usr/bin/python3 -m unittest tests/test_routine_items.py
+          bash tests/test-audit-record.sh

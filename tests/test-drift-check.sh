@@ -21,6 +21,9 @@ unset CLAUDE_MD_AUDIT_INTERVAL
 # CSR #2450: isolate the update part (skill-update-check-last, skill-update-failed.json)
 export MH_STATE_DIR="$WORK/da-tools"
 mkdir -p "$MH_STATE_DIR"
+# CSR #2491: the routine peek segment is tested in tests/test_routine_items.py; here it is a
+# silent no-op so these line counts see only the rules-drift and audit-notice segments
+export MH_PYTHON=/usr/bin/true MH_LOCAL_DIR="$WORK/local"
 trap 'rm -rf "$WORK"' EXIT
 
 mk(){ printf '# version: %s\n# rules\n%s\n' "$1" "$2" > "$3"; }

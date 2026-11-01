@@ -213,9 +213,14 @@ model: opus (reason: audit)
 Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
 to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
 <MANIFEST>
+Do not report these again (dismissed earlier, path | quote): <DO_NOT_REPORT>
+Emit one `FINDING <json>` line per finding (one-line JSON object with keys sev, path, line, quote, summary;
+quote = the offending file text verbatim, at most 120 characters, JSON-escaped), then one `FINDINGS_TOTAL <n>` line.
 End with one `COVERED: <abs path> last_line=<n>` line per path above (n = the last line number your
 Read tool showed for that file), then one `FINDINGS high=<n> medium=<n> low=<n>` line.
 ```
+
+`<DO_NOT_REPORT>` 자리에는 `python3 "$AR_DIR/routine_items.py" do-not-report` 출력을 넣는다(없으면 `none`). `AR_DIR` = `$AR` 가 있는 폴더.
 
 ③ 에이전트의 **최종 메시지 전문**을 `$RUN_DIR/report.md` 로 저장한다(Write — 요약·편집 금지).
 
@@ -262,6 +267,73 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 `REPORTED` 의 뜻: 감사 에이전트가 줄 수를 받지 않고도 모든 파일의 마지막 줄 번호를 맞혔다 — 각 파일을 열었다는
 증거다. 끝까지 읽었다는 것도, 검토 품질도 증명하지 않는다. findings 개수는 에이전트 자신의 집계다.
 `--dry-run`(post·update-check)은 기록·jsonl·보고서 사본을 쓰지 않고 레코드를 화면에만 출력한다.
+
+### 관찰 → 받아들이기 → 처분 (`/memory-health routine`, CSR #2491)
+
+「감사 돌렸음, 끝」으로 끝나지 않게 — 루틴이 찾은 것은 전부 **원장의 항목**이 되고, 항목마다 **처분**이 붙어야 실행이 끝난다.
+도구 = `scripts/routine_items.py`(stdlib, `/usr/bin/python3` 3.9). 로컬 상태 폴더 `$MH_LOCAL_DIR`(기본: Claude 설정 폴더 안
+`memory-health-local/`, 심링크가 아닌 진짜 폴더) — 원장 `items.jsonl`(추가만 하는 단일 기록) · 이 맥의 채널 목록 `channels.json`
+(공개 저장소에 올리지 않는다) · 부분 기록 `parts.jsonl`·`part-<C~F>-last` · 감사 범위 진척 `audit-coverage.json`.
+
+**누가·언제**: ① 감지 = 기존 SessionStart 훅 `memory-rules-drift-check.sh` 가 매 세션 맨 먼저 `routine_items.py peek` 을 부른다
+(로컬 읽기만, 1초 상한, 출력 600자 이하 — 열린 항목 수·기한 지난 부분·채널 새 사건). peek 이 0 이 아닌 코드로 끝나면 `routine peek FAILED rc=<n>`
+한 줄. 훅 자체가 안 돌면 두 번째 SessionStart 명령 `peek-watchdog.sh`(상태 폴더에 **복사**해 설치)가 `routine detector stale` 한 줄을 낸다.
+② 받아들이기·처분 = 그 알림을 받은 대화형 세션이 다른 일보다 먼저 아래를 실행한다(`claude -p` 에서는 하지 않는다 — 그쪽 훅 환경은
+`CLAUDE_CODE_ENTRYPOINT=sdk-cli` 라서(대화형 = `cli`, 실측) peek 이 실행 안내 없이 개수 줄만 낸다).
+
+```bash
+RI="python3 $HOME/.claude/skills/memory-health/scripts/routine_items.py"   # 설치 위치에 맞게
+$RI start [--force]          # 실행권(lease) 획득 + run 행(due_parts). 다른 세션이 30분 안에 쓰고 있으면 거부
+# 기한인 부분만(--force 는 여섯 부분 전부):
+#  P-A 고정 범위 감사 — 위 4단계 → $RI ingest-audit --run-dir "$RUN_DIR" --part A
+#  P-B 스킬 업데이트   — bash "$AR" update-check > "$T/upd.txt"; $RI ingest-update --file "$T/upd.txt"
+#  P-C 업데이트 채널   — $RI scan-channels        (내장 plugins 채널 + channels.json 의 log_lines·stamp_age 채널)
+#  P-D 설치 진단       — $RI ingest-doctor        (claude doctor, 읽기 전용, 60초 상한)
+#  P-E 순환 전체 감사  — $RI plan-shards → 조각마다: pre --shard <manifest> → 감사 에이전트 → post → ingest-audit --part E → cover --run-dir … --shard N
+#                         (AUDIT_INCOMPLETE 조각은 plan-shards --split N 으로 반으로 나눠 한 번 다시)
+#  P-F 안 쓰는 확장    — $RI scan-unused          (~/.claude.json 의 skillUsage·pluginUsage 두 키만 읽는다 — 그 파일엔 자격증명도 있다)
+#  한 부분을 아예 못 돌렸으면: $RI part-fail --part X --reason "<사유>"
+$RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
+```
+
+- P-E 범위 = 공식 `/doctor prompt-audit` 기본 범위(설정 폴더의 CLAUDE.md·rules·skills·commands·agents·output-styles) + `channels.json` 의
+  `project_roots` 각 루트의 CLAUDE.md·CLAUDE.local.md·AGENTS.md·`.claude/{rules,skills,commands,agents,output-styles}`. 월 60만 자(7만5천 자 조각 8개),
+  그중 30만 자 이상은 한 번도 감사 안 된 파일 → 가장 오래된 파일에, 나머지는 바뀐 파일에. 7만5천 자보다 큰 파일은 줄 범위 조각으로 나눠 여러 달에 걸쳐 덮는다.
+  `plan-shards` 는 매번 「미감사 파일 수·최대 감사 경과일」을 출력하고, 목록에 없는 프로젝트 루트(`discover_dirs` 2단계 아래)나 사라진 루트는 `unknown` 항목이 된다.
+- 조각(`경로#L시작-끝`)의 `COVERED` 는 주어진 끝 줄을 맞혀야 하므로 「열었다」 증거가 통째 파일보다 약하다(범위를 알려 준다).
+
+**처분** — `$RI dispose <id>... --disp <종류> …` (여러 id 를 한 번에, 하나라도 규칙 위반이면 아무것도 안 쓴다):
+
+| 처분 | 필요한 것 | 받지 않는 경우 |
+|---|---|---|
+| `fixed` | `--ref` = 커밋 sha · PR URL · `CSR #N c#M`(그 글의 댓글로 확인) | 감사 지적은 그 파일에 인용문이 남아 있으면 거부 · `part_failed` 는 같은 run 의 뒤 PASS 행 `ts` 만 |
+| `task` | `--ref "CSR #N"` — 그 글 본문/댓글에 항목 id 가 그대로 있어야 함 | 게시판 접속 불가면 거부 |
+| `dismissed` | `--reason` 20자 이상 | 허용 종류만: 감사 지적(high 제외)·update-available·unused-extension·plugin-version-changed·unclassified. 감사 지적의 기각은 그 파일의 sha256 에 묶여, 파일이 바뀌면 다시 열린다 |
+| `deferred` | `--goal --deadline(YYYY-MM-DD, 90일 안) --method --revert` 넷 다 | 항목당 한 번만 · sev=high 불가 |
+| `verified` | `--reason` 에 근거(명령과 출력 줄) 20자 이상 | `unknown`·`unobserved_plugin` 은 세션이 닫지 못한다 — 다음 스캔이 원천을 다시 읽어야 도구가 `fixed recheck:<run>` 을 쓴다 |
+
+| 항목 종류 | 세션이 할 일 |
+|---|---|
+| 감사 지적 high | 같은 세션에 `fixed` 또는 `task` |
+| 감사 지적 medium/low | 이번 묶음에서 `fixed`, 사유 있는 `dismissed`, 또는 `deferred` |
+| claude-forge·memory-health·skill-advisor 수정 | 저장소마다 작업 트리 1개·PR 1개, 병합 승인은 실행 끝에 한 번 |
+| 개인 로컬 파일 수정 | 백업 후 직접 수정 |
+| 소유자만 정할 것(돈·권한·자격증명·비가역·취향) · doctor 권한 규칙 경고 | 이번 달 후속 CSR 에 `task`, 그 글에 `waiting` 태그 |
+| 스킬 업데이트 가능 | 상류 diff 를 읽고 claude-forge 작업 트리에서 `update.py <skill> --apply` + PR, 또는 `dismissed`(일부러 갈라 둔 로컬 수정) |
+| 플러그인 판 바뀜 | `claude plugin list --json` 에서 오류 없이 켜져 있는지 보고 `verified` |
+| 자동 갱신 마켓 14일 넘게 안 갱신 | `claude plugin marketplace update <이름>` 후 다시 확인·기록 |
+| `unobserved_plugin`(자동 갱신 꺼짐 + 45일 안 상류 관찰 없음) | 상류를 확인하는 채널의 관찰 규칙에 넣거나 자동 갱신을 켠다 — 다음 스캔이 닫는다 |
+| 실행기 멈춤(`runner-stale`) | `launchctl list`·로그·rc 로 진단, sudo 없이 고칠 수 있으면 고치고 아니면 소유자 `task` |
+| `part_failed` | 같은 run 에서 그 부분을 다시 돌려 PASS → `fixed`(그 행 ts). 안 되면 `task` — 실행은 종료 코드 4(완료 아님)로 끝나고 다음 세션에 다시 기한 |
+| `cursor_reset` | 로그를 처음부터(교체됐으면 옛 파일도) 읽어 빠진 사건을 받아들이고 `verified` |
+| `unclassified` | 채널의 사건/무시 정규식을 보강하고 `verified`(근거=정규식), 또는 `dismissed` |
+| `orphaned_task`·`unlinked_task` | 다시 처분 — 새 `task` 또는 그 CSR 에 id 댓글 추가 |
+
+- **후속 CSR 은 달마다 최대 1개**(「월간 루틴 YYYY-MM 후속」, 실행권을 쥔 세션만 만들고 먼저 같은 제목을 찾아 재사용) — 항목마다 CSR 을 만들지 않는다.
+- **완료 판정**: `status --check-refs --run <최신 run_id>` 종료 코드가 **0 일 때만** 끝 — 1 열린 항목 · 2 원장 불명/기한 지난 미룸/참조 미확인/기한 부분 PASS 없음 · 4 막힘을 후속 작업에 넘김(완료 아님). 보고는 그 STATUS 줄로 끝낸다.
+- **다음 판 관찰**: 판별 관찰 항목을 따로 만들지 않는다 — 채널 점검이 상시(매 세션 peek + 매달 받아들이기)다.
+- **공개 저장소 경계**: memory-health·skill-advisor 에 push/PR 하기 전 `$RI boundary-check --repo <저장소> [--body <PR 본문 파일>]` — gitleaks + 차단 목록(`scan-channels` 가 매번 다시 만드는 `boundary-deny.txt`) + 프로젝트 루트 이름 단어 검사. 목록이 없거나 비었거나, gitleaks 오류, 기준 커밋을 못 정하면 막는다.
+- `channels.json` 키: `channels[]`(`id`·`type`=`log_lines`|`stamp_age`·`path`·`events[{re,kind,sev,observe,plugin}]`·`ignore[]`·`stale_path`·`max_age_h`) · `required_ids[]` · `project_roots[]` · `discover_dirs[]` · `board_post_url`(`{n}` 자리에 글 번호) · `gitleaks_cmd`(선택).
 
 ### 보장 범위 (Covers — Round-8 원문)
 
