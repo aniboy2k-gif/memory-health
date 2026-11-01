@@ -116,10 +116,34 @@ def channel_events(ch, rows):
 
 
 # ── builtin plugins channel ─────────────────────────────────────────────────
+# Default-on marketplaces (G3 step 3). Sources, retrieved 2026-11-01:
+#   https://code.claude.com/docs/en/discover-plugins — "On by default: `claude-plugins-official` and the other
+#   official marketplace names except `knowledge-work-plugins` and `first-party-plugins`, plus marketplaces
+#   added from claude.ai"
+#   https://code.claude.com/docs/en/plugins/security.md — "These marketplace names make up the official tier:"
+#   claude-plugins-official, claude-code-marketplace, claude-code-plugins, anthropic-marketplace, anthropic-plugins,
+#   agent-skills, anthropic-agent-skills, life-sciences, knowledge-work-plugins, claude-for-legal,
+#   claude-for-financial-services, financial-services-plugins, first-party-plugins, claude-tag-plugins
+# No machine-readable copy exists. A name added later falls to "off" (fails safe: the item opens) and an explicit
+# autoUpdate key (precedence 1-2) always overrides this list. claude.ai marketplaces are recognised only by their
+# record in known_marketplaces_claudeai.json, never by a `claudeai-` name alone.
+DEFAULT_ON = ("claude-plugins-official", "claude-code-marketplace", "claude-code-plugins", "anthropic-marketplace",
+              "anthropic-plugins", "agent-skills", "anthropic-agent-skills", "life-sciences", "claude-for-legal",
+              "claude-for-financial-services", "financial-services-plugins", "claude-tag-plugins")
+
+
 def plugin_state():
+    """-> (versions, known_marketplaces, settings, claude.ai marketplaces); a present but unreadable
+    claude.ai record raises like the other two files (-> unknown), an absent one means none."""
     base = os.path.join(ri.home(), ".claude", "plugins")
     ip = ri.load_json(os.path.join(base, "installed_plugins.json"))
     km = ri.load_json(os.path.join(base, "known_marketplaces.json"))
+    try:
+        kc = ri.load_json(os.path.join(base, "known_marketplaces_claudeai.json"))
+    except FileNotFoundError:
+        kc = {}
+    if not isinstance(kc, dict):
+        raise ValueError("known_marketplaces_claudeai.json is not an object")
     try:
         st = ri.load_json(os.path.join(ri.home(), ".claude", "settings.json"))
     except (OSError, ValueError):
@@ -128,11 +152,11 @@ def plugin_state():
     for name, ents in (ip.get("plugins") or {}).items():
         if isinstance(ents, list) and ents:
             versions[name] = str(ents[0].get("version") or "")
-    return versions, km, st
+    return versions, km, st, kc
 
 
-def auto_update(mk, km, st):
-    """effective plugin auto-update (precedence: settings -> known_marketplaces.json -> default; env)."""
+def auto_update(mk, km, st, kc=None):
+    """effective plugin auto-update (precedence: settings -> marketplace record -> default; env)."""
     env = dict(st.get("env") or {})
     env.update(os.environ)
     if str(env.get("FORCE_AUTOUPDATE_PLUGINS", "")) not in ("1", "true"):
@@ -142,15 +166,37 @@ def auto_update(mk, km, st):
     ekm = (st.get("extraKnownMarketplaces") or {}).get(mk) or {}
     if "autoUpdate" in ekm:
         return bool(ekm["autoUpdate"])
-    k = km.get(mk) or {}
+    kc = kc or {}
+    k = km.get(mk) or kc.get(mk) or {}  # a claude.ai marketplace is recorded in the claudeai file instead
     if "autoUpdate" in k:
         return bool(k["autoUpdate"])
-    return mk == "claude-plugins-official"
+    return mk in DEFAULT_ON or mk in kc
+
+
+def helper_blocked(name, mk, km, kc):
+    """Claude Code's auto-update skips a plugin whose marketplace entry declares headersHelper
+    (docs plugins/loading); an entry that cannot be read counts as skipped, so the item stays open."""
+    ent = km.get(mk) or kc.get(mk)
+    loc = str(ent.get("installLocation") or "") if isinstance(ent, dict) else ""
+    path = loc if loc.endswith(".json") else os.path.join(loc, ".claude-plugin", "marketplace.json")
+    try:
+        cat = ri.load_json(path) if loc else {}
+    except (OSError, ValueError):
+        return True
+    ents = [p for p in (cat.get("plugins") if isinstance(cat, dict) else None) or []
+            if isinstance(p, dict) and p.get("name") == name.split("@", 1)[0]]
+    return len(ents) != 1 or "headersHelper" in ents[0]
+
+
+def marketplace_dates(km):
+    return {mk: e["lastUpdated"] for mk, e in sorted(km.items())
+            if isinstance(e, dict) and isinstance(e.get("lastUpdated"), str)}
 
 
 def plugin_events(rows):
-    """version changes vs the plugins cursor (no cursor = silent baseline)."""
-    versions, _km, _st = plugin_state()
+    """version and marketplace lastUpdated changes vs the plugins cursor (no cursor, or no recorded date for a
+    marketplace, = silent baseline: a cursor written before dates were stored emits nothing)."""
+    versions, km, _st, _kc = plugin_state()
     cur = ri.latest(rows, "cursor", channel="plugins")
     out = []
     if cur:
@@ -158,6 +204,11 @@ def plugin_events(rows):
             if (cur.get("versions") or {}).get(name) != v:
                 out.append(("plugin-version-changed", "medium", "plugins\n%s\n%s" % (name, v),
                             "plugins: %s %s -> %s" % (name, (cur.get("versions") or {}).get(name), v), {"plugin": name}))
+        old = cur.get("lastUpdated") if isinstance(cur.get("lastUpdated"), dict) else {}
+        for mk, lu in marketplace_dates(km).items():
+            if mk in old and old[mk] != lu:
+                out.append(("marketplace-refreshed", "low", "plugins\nmk\n%s\n%s" % (mk, lu),
+                            "plugins: marketplace %s lastUpdated %s -> %s" % (mk, old[mk], lu), {"marketplace": mk}))
     return versions, out
 
 
@@ -200,8 +251,12 @@ class Batch(object):
         self.items.append(row)
 
     def fix(self, iid, run_id):
+        """called only after a successful source read; a coverage item closes by this recheck alone (design L97),
+        so one disposed task/deferred (the only dispositions coverage kinds accept) is closed here too."""
         e = self.f.get(iid)
-        if e and ri.item_state(e) in ("open", "overdue") and iid not in self.seen:
+        last = e["disps"][-1][1].get("disp") if e and e["disps"] else None
+        pending = e and e["meta"].get("kind") in ri.COVERAGE_KINDS and last in ("task", "deferred")
+        if e and (ri.item_state(e) in ("open", "overdue") or pending) and iid not in self.seen:
             self.other.append({"ts": ri.iso(), "type": "disp", "id": iid, "disp": "fixed", "ref": "recheck:%s" % run_id,
                                "reason": "scanner re-read the source successfully"})
 
@@ -275,7 +330,7 @@ def cmd_scan_channels():
                 b.fix(ri.item_id("C", "unknown", "unknown\nrequired\n%s" % rid), run_id)
             else:
                 b.item(unknown_item("C", "required\n%s" % rid, "required channel %s missing or unread" % rid))
-        plugin_scan(b, rows, run_id, cursors)
+        plugin_scan(b, rows, run_id, cursors, cfg)
         b.commit(cursors)
         ri.record_part("C", run_id, True)
     print("SCANNED items=%d" % len(b.items))
@@ -316,26 +371,24 @@ def _scan_stamp_channel(b, ch, cid, run_id):
     return True
 
 
-def plugin_scan(b, rows, run_id, cursors):
+def plugin_scan(b, rows, run_id, cursors, cfg=None):
     try:
         versions, pe = plugin_events(rows)
-        _v, km, st = plugin_state()
+        _v, km, st, kc = plugin_state()
     except (OSError, ValueError) as exc:
         b.item(unknown_item("C", "plugins", "plugins json unreadable: %s" % exc))
         return
     b.fix(ri.item_id("C", "unknown", "unknown\nplugins"), run_id)
     for kind, sev, key, text, x in pe:
-        b.item(ri.make_item("C", kind, key, sev, text, text, plugin=x["plugin"]))
+        b.item(ri.make_item("C", kind, key, sev, text, text, **x))
     t = ri.now()
-    obs = {}
-    for r in rows + b.other:
-        if r.get("type") == "obs" and r.get("plugin") and r.get("version"):
-            obs[r["plugin"]] = max(obs.get(r["plugin"], 0), ri.parse_iso(r.get("ts")) or 0)
+    obs = observed(rows + b.other, cfg)
     for name in sorted(versions):
         mk = name.split("@", 1)[1] if "@" in name else ""
-        on = auto_update(mk, km, st)
+        on = auto_update(mk, km, st, kc)
+        helper = helper_blocked(name, mk, km, kc) if on else False
         iid = ri.item_id("C", "unobserved_plugin", "plugins\nunobserved\n%s" % name)
-        if on or t - obs.get(name, 0) <= ri.OBS_WINDOW_DAYS * 86400:
+        if (on and not helper) or t - obs.get(name, 0) <= ri.OBS_WINDOW_DAYS * 86400:
             b.fix(iid, run_id)
         else:
             b.item(ri.make_item("C", "unobserved_plugin", "plugins\nunobserved\n%s" % name, "high",
@@ -345,7 +398,20 @@ def plugin_scan(b, rows, run_id, cursors):
         if on and lu and t - lu > MK_STALE_DAYS * 86400:
             b.item(ri.make_item("C", "marketplace-stale", "plugins\nmkstale\n%s\n%s" % (mk, (km.get(mk) or {}).get("lastUpdated")),
                                 "medium", "marketplace %s lastUpdated %s while auto-update is on" % (mk, (km.get(mk) or {}).get("lastUpdated"))))
-    cursors.append({"ts": ri.iso(), "type": "cursor", "channel": "plugins", "versions": versions})
+    cursors.append({"ts": ri.iso(), "type": "cursor", "channel": "plugins", "versions": versions,
+                    "lastUpdated": marketplace_dates(km)})
+
+
+def observed(rows, cfg):
+    """plugin -> latest observation epoch, counting only observations from a channel whose `plugins`
+    list names that plugin (design L85: from its listing channel)."""
+    listing = {ch.get("id"): set(ch.get("plugins") or []) for ch in (cfg or {}).get("channels") or []}
+    obs = {}
+    for r in rows:
+        if r.get("type") == "obs" and r.get("plugin") and r.get("version") \
+                and r["plugin"] in listing.get(r.get("channel"), ()):
+            obs[r["plugin"]] = max(obs.get(r["plugin"], 0), ri.parse_iso(r.get("ts")) or 0)
+    return obs
 
 
 def backup_registry():

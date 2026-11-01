@@ -221,8 +221,8 @@ def cmd_plan_shards(split):
                 never.extend(todo)
         old.sort(key=lambda x: x[0])
         g1 = never + [u for _a, us in old for u in us]
-        take1, left1 = fill(g1, RESERVED)
-        take2, left2 = fill(changed, MONTH_BUDGET - RESERVED + left1)
+        take1, used1 = fill_floor(g1, RESERVED, MONTH_BUDGET)
+        take2, left2 = fill(changed, MONTH_BUDGET - used1)
         if left2:
             more, _l = fill([u for u in g1 if u not in take1], left2)
             take1 += more
@@ -257,6 +257,19 @@ def fill(units, budget):
             took.append(u)
             budget -= u[4]
     return took, budget
+
+
+def fill_floor(units, floor, budget):
+    """the reserve is a floor (design L138): take units in order until >= floor; a unit above the shard
+    cap or the month budget is skipped and the next one tried. -> (taken, chars taken)."""
+    took, used = [], 0
+    for u in units:
+        if used >= floor:
+            break
+        if u[4] <= SHARD_CHARS and used + u[4] <= budget:
+            took.append(u)
+            used += u[4]
+    return took, used
 
 
 def pack(units):
@@ -405,7 +418,9 @@ def cmd_boundary_check(repo, body):
         bn = os.path.basename(r.rstrip("/"))
         if not bn or git(repo, "grep", "-qwF", bn, base)[0] == 0:
             continue  # already public in the base tree
-        rx = re.compile(r"(?<![\w-])%s(?![\w-])" % re.escape(bn))
+        # word boundary as for `grep -w`: only [A-Za-z0-9_] are word characters, so `name-suffix` matches.
+        # ASCII-only, hence stricter than BSD -w in a UTF-8 locale (non-ASCII letters count as boundaries here)
+        rx = re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(bn))
         hits.extend("%s: basename %s" % (w, bn) for w, t in texts if rx.search(t))
     hits.extend(gitleaks_hits(cfg, repo, base))
     if hits:
