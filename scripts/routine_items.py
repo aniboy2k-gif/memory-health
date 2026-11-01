@@ -292,7 +292,10 @@ def read_lease():
 
 
 def lease_fresh(lease):
-    return bool(lease) and now() - float(lease.get("heartbeat_ts") or 0) < LEASE_STALE_S
+    try:
+        return isinstance(lease, dict) and now() - float(lease.get("heartbeat_ts") or 0) < LEASE_STALE_S
+    except (TypeError, ValueError):  # a malformed lease counts as stale (may be taken over)
+        return False
 
 
 class Mutate(object):
@@ -426,10 +429,13 @@ def board_post(n):
             d = json.loads(r.read().decode("utf-8"))
     except Exception as exc:  # unreachable, 404, bad JSON: all mean "refs unchecked"
         raise BoardError(str(exc))
-    p = d.get("data", d) if isinstance(d, dict) else {}
-    comments = p.get("comments") or []
-    texts = [p.get("content") or ""] + [c.get("content") or "" for c in comments]
-    return str(p.get("status") or ""), texts, [str(c.get("id")) for c in comments]
+    p = d.get("data", d) if isinstance(d, dict) else None
+    comments = p.get("comments") if isinstance(p, dict) else None
+    if not isinstance(p, dict) or not isinstance(comments or [], list) or \
+            not all(isinstance(c, dict) for c in comments or []):
+        raise BoardError("unexpected board response shape")
+    texts = [str(p.get("content") or "")] + [str(c.get("content") or "") for c in comments or []]
+    return str(p.get("status") or ""), texts, [str(c.get("id")) for c in comments or []]
 
 
 # ── dispose ──────────────────────────────────────────────────────────────────
@@ -461,40 +467,50 @@ def compute_status(check_refs=False, run=None):
         if kind in COVERAGE_KINDS or kind == "part_failed":
             blocked.append(i)
         if check_refs:
-            n = re.match(r"^CSR #(\d+)$", d.get("ref") or "")
-            n = n.group(1) if n else None
-            if n not in refs:
-                try:
-                    refs[n] = board_post(n) if n else None
-                except BoardError as exc:
-                    refs[n] = exc
-            got = refs[n]
-            if got is None or isinstance(got, BoardError):
-                code2.append("refs unchecked (%s)" % i)
-            elif got[0].lower() in ("done", "closed"):
-                opened.append((i, "orphaned_task"))
-            elif not any(i in t for t in got[1]):
-                opened.append((i, "unlinked_task"))
+            _status_task_ref(i, d, refs, code2, opened)
     if run is not None:
-        lr = latest(rows, "run")
-        if not lr or lr.get("run_id") != run:
-            code2.append("--run %s is not the latest run" % run)
-        else:
-            passed = {r.get("part") for r in part_rows() if r.get("run_id") == run and r.get("result") == "PASS"}
-            for p in lr.get("due_parts") or []:
-                if p in passed:
-                    continue
-                pf = f.get(part_failed_id(p, run))
-                if pf and pf["disps"] and pf["disps"][-1][1].get("disp") == "task" and item_state(pf) == "disposed":
-                    blocked.append(part_failed_id(p, run))
-                else:
-                    code2.append("part %s due in %s without PASS" % (p, run))
+        _status_run_parts(rows, f, run, code2, blocked)
     open_ids = {o[0] for o in opened}
     blocked = sorted({b for b in blocked if b not in open_ids})
     code = 2 if code2 else 1 if opened else 4 if blocked else 0
     if not check_refs:
         notes.append("task refs not checked — completion needs `status --check-refs --run <latest run_id>`")
     return code, code2, opened, blocked, notes, f
+
+
+def _status_task_ref(i, d, refs, code2, opened):
+    """--check-refs for one task disposition; appends to code2/opened, caches board reads in refs."""
+    n = re.match(r"^CSR #(\d+)$", d.get("ref") or "")
+    n = n.group(1) if n else None
+    if n not in refs:
+        try:
+            refs[n] = board_post(n) if n else None
+        except BoardError as exc:
+            refs[n] = exc
+    got = refs[n]
+    if got is None or isinstance(got, BoardError):
+        code2.append("refs unchecked (%s)" % i)
+    elif got[0].lower() in ("done", "closed"):
+        opened.append((i, "orphaned_task"))
+    elif not any(i in t for t in got[1]):
+        opened.append((i, "unlinked_task"))
+
+
+def _status_run_parts(rows, f, run, code2, blocked):
+    """--run: every due part of that run needs a PASS row or a task-disposed part_failed item."""
+    lr = latest(rows, "run")
+    if not lr or lr.get("run_id") != run:
+        code2.append("--run %s is not the latest run" % run)
+        return
+    passed = {r.get("part") for r in part_rows() if r.get("run_id") == run and r.get("result") == "PASS"}
+    for p in lr.get("due_parts") or []:
+        if p in passed:
+            continue
+        pf = f.get(part_failed_id(p, run))
+        if pf and pf["disps"] and pf["disps"][-1][1].get("disp") == "task" and item_state(pf) == "disposed":
+            blocked.append(part_failed_id(p, run))
+        else:
+            code2.append("part %s due in %s without PASS" % (p, run))
 
 
 def cmd_status(check_refs, run, as_json):
@@ -546,6 +562,30 @@ def cmd_peek():
     events.sort(key=lambda x: -SEV_RANK.get(x[0], 1))
     due = due_parts(pending=len(events))
     iv = interval_days()
+    od, od_items = _peek_overdue(f, open_ids, t, iv)
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    if not (open_ids or due or events or unknown):
+        touch_peek_last()
+        return 0
+    bits = _peek_bits(unknown, open_ids, due, events, iv)
+    instr = _peek_instr()
+    # measured (CSR #2491 landing): `claude -p` hooks see CLAUDE_CODE_ENTRYPOINT=sdk-cli, interactive = cli
+    headless = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk")
+    pre = ""
+    if od or od_items:
+        pre = "ROUTINE OVERDUE %dd — " % max(od + od_items)
+    if headless:  # non-interactive: count line only, no run instruction, no event lines
+        print("[memory-health routine] %s%s" % (pre, " · ".join(bits)))
+        touch_peek_last()
+        return 0
+    lines = _peek_lines("[memory-health routine] %s%s — %s" % (pre, " · ".join(bits), instr), events)
+    print("\n".join(lines))
+    touch_peek_last()
+    return 0
+
+
+def _peek_overdue(f, open_ids, t, iv):
+    """-> (parts overdue > 7d past the interval, open items older than 30d), both in days."""
     ages = []
     for p in PARTS:
         e = stamp_epoch(p)
@@ -554,10 +594,10 @@ def cmd_peek():
     od = [int(a) + iv for a in ages if a > 7]
     oldest = [t - (parse_iso(f[i]["first_ts"]) or t) for i in open_ids]
     od_items = [int(a / 86400) for a in oldest if a > 30 * 86400]
-    signal.setitimer(signal.ITIMER_REAL, 0)
-    if not (open_ids or due or events or unknown):
-        touch_peek_last()
-        return 0
+    return od, od_items
+
+
+def _peek_bits(unknown, open_ids, due, events, iv):
     bits = []
     if unknown:
         bits.append("ledger unreadable")
@@ -569,21 +609,19 @@ def cmd_peek():
         bits.append("pending %d" % len(events))
     if iv != 30:
         bits.append("interval %dd" % iv)
+    return bits
+
+
+def _peek_instr():
     lease = read_lease()
-    # measured (CSR #2491 landing): `claude -p` hooks see CLAUDE_CODE_ENTRYPOINT=sdk-cli, interactive = cli
-    headless = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk")
     if lease_fresh(lease):
-        instr = "routine running (session %s)" % str(lease.get("session_id"))[:8]
-    else:
-        instr = "run /memory-health routine"
-    pre = ""
-    if od or od_items:
-        pre = "ROUTINE OVERDUE %dd — " % max(od + od_items)
-    if headless:  # non-interactive: count line only, no run instruction, no event lines
-        print("[memory-health routine] %s%s" % (pre, " · ".join(bits)))
-        touch_peek_last()
-        return 0
-    lines = ["[memory-health routine] %s%s — %s" % (pre, " · ".join(bits), instr)]
+        return "routine running (session %s)" % str(lease.get("session_id"))[:8]
+    return "run /memory-health routine"
+
+
+def _peek_lines(head, events):
+    """head line + event lines, cut to PEEK_CAP with a `+N more pending` tail."""
+    lines = [head]
     used = len(lines[0])
     for k, (sev, text) in enumerate(events):
         line = "  · %s" % text[:140]
@@ -594,9 +632,7 @@ def cmd_peek():
             break
         lines.append(line)
         used += 1 + len(line)
-    print("\n".join(lines))
-    touch_peek_last()
-    return 0
+    return lines
 
 
 def touch_peek_last():

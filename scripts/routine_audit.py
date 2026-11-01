@@ -48,8 +48,10 @@ def parse_findings(run_dir):
             d = json.loads(x[len("FINDING "):])
             if not isinstance(d, dict) or any(k not in d for k in ("sev", "path", "line", "quote", "summary")):
                 raise ValueError("FINDING missing a key")
-            if d["sev"] not in ("high", "medium", "low") or not isinstance(d["line"], int) or len(d["quote"]) > 120:
+            if d["sev"] not in ("high", "medium", "low") or type(d["line"]) is not int or \
+                    not all(isinstance(d[k], str) for k in ("path", "quote", "summary")):
                 raise ValueError("FINDING field invalid")
+            d["quote"] = d["quote"][:120]  # a verbatim prefix is still verbatim file text (D2 cap)
             found.append(d)
         else:
             raise ValueError("unexpected line in findings.txt")
@@ -324,6 +326,8 @@ def split_shard(n, run_id):
 
 def cmd_cover(run_dir, n):
     run_dir = os.path.abspath(run_dir)
+    if not str(n).isdigit():
+        raise ri.Refuse("--shard must be a shard number")
     with ri.Mutate():
         rows = ri.load_ledger()[0]
         run_id = ri.current_run(rows)
@@ -384,9 +388,10 @@ def cmd_boundary_check(repo, body):
             print("BLOCKED no base ref (@{u} undefined and merge-base HEAD origin/HEAD failed)")
             return 1
     base = base.strip()
-    _r, diff = git(repo, "diff", "%s..HEAD" % base)
+    # plain diff whatever the user's git config says (color / external diff would hide '+' lines)
+    _r, diff = git(repo, "-c", "color.ui=never", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "%s..HEAD" % base)
     added = "\n".join(x[1:] for x in diff.split("\n") if x.startswith("+") and not x.startswith("+++"))
-    _r, msgs = git(repo, "log", "--format=%B", "%s..HEAD" % base)
+    _r, msgs = git(repo, "-c", "color.ui=never", "log", "--no-color", "--format=%B", "%s..HEAD" % base)
     texts = [("diff", added), ("log", msgs)]
     if body:
         with open(body, encoding="utf-8") as f:
@@ -402,14 +407,7 @@ def cmd_boundary_check(repo, body):
             continue  # already public in the base tree
         rx = re.compile(r"(?<![\w-])%s(?![\w-])" % re.escape(bn))
         hits.extend("%s: basename %s" % (w, bn) for w, t in texts if rx.search(t))
-    gl = cfg.get("gitleaks_cmd") or ["gitleaks", "detect", "--source", "{repo}", "--log-opts", "{base}..HEAD", "--no-banner", "--redact"]
-    try:
-        g = subprocess.run([x.replace("{repo}", repo).replace("{base}", base) for x in gl],
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        if g.returncode != 0:
-            hits.append("gitleaks exit %d" % g.returncode)
-    except OSError as exc:
-        hits.append("gitleaks error: %s" % exc)
+    hits.extend(gitleaks_hits(cfg, repo, base))
     if hits:
         print("BLOCKED %d hit(s)" % len(hits))
         for h in hits:
@@ -417,3 +415,16 @@ def cmd_boundary_check(repo, body):
         return 1
     print("BOUNDARY OK base=%s" % base[:12])
     return 0
+
+
+def gitleaks_hits(cfg, repo, base):
+    """-> [] when gitleaks exits 0; any non-zero exit or launch error is a hit (fail-closed)."""
+    gl = cfg.get("gitleaks_cmd") or ["gitleaks", "detect", "--source", "{repo}", "--log-opts", "{base}..HEAD", "--no-banner", "--redact"]
+    try:
+        g = subprocess.run([x.replace("{repo}", repo).replace("{base}", base) for x in gl],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        if g.returncode != 0:
+            return ["gitleaks exit %d" % g.returncode]
+    except OSError as exc:
+        return ["gitleaks error: %s" % exc]
+    return []

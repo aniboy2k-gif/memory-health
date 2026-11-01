@@ -263,36 +263,11 @@ def cmd_scan_channels():
         ok_ids = set()
         for ch in (cfg or {}).get("channels") or []:
             cid = ch.get("id")
-            if ch.get("type") == "log_lines":
-                rd, evs = channel_events(ch, rows)
-                if "error" in rd:
-                    b.item(unknown_item("C", "%s\nlog" % cid, "%s: log %s" % (cid, rd["error"]), channel=cid))
-                    continue
-                for kind, sev, key, text, x in evs:
-                    if kind == "obs":
-                        b.other.append({"ts": ri.iso(), "type": "obs", "channel": cid, "plugin": x.get("plugin"),
-                                        "version": x.get("version"), "line": ri.clip(text)[0]})
-                        continue
-                    src = "%s @%s: %s" % (cid, x.get("offset", 0), text) if kind != "cursor_reset" else text
-                    b.item(ri.make_item("C", kind, key, sev, "%s: %s" % (cid, text[:160]), src, channel=cid,
-                                        **({"old_inode": x.get("old_inode"), "old_offset": x.get("old_offset")}
-                                           if kind == "cursor_reset" else {})))
-                cursors.append({"ts": ri.iso(), "type": "cursor", "channel": cid, "inode": rd["inode"],
-                                "offset": rd["end"], "prefix_sha1": rd["prefix"]})
-                b.fix(ri.item_id("C", "unknown", "unknown\n%s\nlog" % cid), run_id)
-                ok = True
-            else:
-                ok = True
+            if ch.get("type") == "log_lines" and not _scan_log_channel(b, ch, cid, rows, run_id, cursors):
+                continue
+            ok = True
             if ch.get("max_age_h") is not None:
-                age, val, err = stamp_age_h(ch)
-                if err:
-                    b.item(unknown_item("C", "%s\nstamp" % cid, "%s: stamp %s" % (cid, err), channel=cid))
-                    ok = False
-                else:
-                    b.fix(ri.item_id("C", "unknown", "unknown\n%s\nstamp" % cid), run_id)
-                    if age > float(ch["max_age_h"]):
-                        b.item(ri.make_item("C", "runner-stale", "%s\nstale\n%d" % (cid, int(val)), "medium",
-                                            "%s: runner stale %.0fh (max %sh)" % (cid, age, ch["max_age_h"]), channel=cid))
+                ok = _scan_stamp_channel(b, ch, cid, run_id)
             if ok:
                 ok_ids.add(cid)
         for rid in (cfg or {}).get("required_ids") or []:
@@ -305,6 +280,40 @@ def cmd_scan_channels():
         ri.record_part("C", run_id, True)
     print("SCANNED items=%d" % len(b.items))
     return 0
+
+
+def _scan_log_channel(b, ch, cid, rows, run_id, cursors):
+    """log_lines channel -> items/obs rows + a new cursor; False when the log is unreadable (channel skipped)."""
+    rd, evs = channel_events(ch, rows)
+    if "error" in rd:
+        b.item(unknown_item("C", "%s\nlog" % cid, "%s: log %s" % (cid, rd["error"]), channel=cid))
+        return False
+    for kind, sev, key, text, x in evs:
+        if kind == "obs":
+            b.other.append({"ts": ri.iso(), "type": "obs", "channel": cid, "plugin": x.get("plugin"),
+                            "version": x.get("version"), "line": ri.clip(text)[0]})
+            continue
+        src = "%s @%s: %s" % (cid, x.get("offset", 0), text) if kind != "cursor_reset" else text
+        b.item(ri.make_item("C", kind, key, sev, "%s: %s" % (cid, text[:160]), src, channel=cid,
+                            **({"old_inode": x.get("old_inode"), "old_offset": x.get("old_offset")}
+                               if kind == "cursor_reset" else {})))
+    cursors.append({"ts": ri.iso(), "type": "cursor", "channel": cid, "inode": rd["inode"],
+                    "offset": rd["end"], "prefix_sha1": rd["prefix"]})
+    b.fix(ri.item_id("C", "unknown", "unknown\n%s\nlog" % cid), run_id)
+    return True
+
+
+def _scan_stamp_channel(b, ch, cid, run_id):
+    """max_age_h check; False when the stamp is unreadable."""
+    age, val, err = stamp_age_h(ch)
+    if err:
+        b.item(unknown_item("C", "%s\nstamp" % cid, "%s: stamp %s" % (cid, err), channel=cid))
+        return False
+    b.fix(ri.item_id("C", "unknown", "unknown\n%s\nstamp" % cid), run_id)
+    if age > float(ch["max_age_h"]):
+        b.item(ri.make_item("C", "runner-stale", "%s\nstale\n%d" % (cid, int(val)), "medium",
+                            "%s: runner stale %.0fh (max %sh)" % (cid, age, ch["max_age_h"]), channel=cid))
+    return True
 
 
 def plugin_scan(b, rows, run_id, cursors):
@@ -407,8 +416,11 @@ def cmd_ingest_doctor(path):
         rows = ri.load_ledger()[0]
         run_id = ri.current_run(rows)
         if path:
-            with open(path, encoding="utf-8") as f:
-                text, rc = f.read(), 0
+            try:
+                with open(path, encoding="utf-8") as f:
+                    text, rc = f.read(), 0
+            except OSError as exc:
+                text, rc = "", "unreadable: %s" % exc
         else:
             try:
                 p = subprocess.run(["claude", "doctor"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)

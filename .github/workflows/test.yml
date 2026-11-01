@@ -48,4 +48,5 @@ jobs:
       - name: Run routine ledger tests (CSR #2491)
         run: |
           /usr/bin/python3 -m unittest tests/test_routine_items.py
+          /usr/bin/python3 -m unittest tests/test_routine_audit.py
           bash tests/test-audit-record.sh

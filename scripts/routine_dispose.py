@@ -33,15 +33,7 @@ def validate_disp(e, disp, a, rows):
         else:
             check_fixed_ref(m, ref)
     elif disp == "task":
-        mm = re.match(r"^CSR #(\d+)$", ref)
-        if not mm:
-            raise Refuse("task ref must be `CSR #N`")
-        try:
-            _st, texts, _ids = board_post(mm.group(1))
-        except BoardError as exc:
-            raise Refuse("board unreachable: %s" % exc)
-        if not any(m["id"] in t for t in texts):
-            raise Refuse("CSR #%s body/comments do not contain %s" % (mm.group(1), m["id"]))
+        check_task_ref(m, ref)
     elif disp == "dismissed":
         if len(reason) < 20:
             raise Refuse("dismissed needs reason >= 20 chars")
@@ -51,20 +43,37 @@ def validate_disp(e, disp, a, rows):
         if len(reason) < 20:
             raise Refuse("verified needs evidence (--reason) >= 20 chars")
     elif disp == "deferred":
-        if any(d.get("disp") == "deferred" for _i, d in e["disps"]):
-            raise Refuse("at most one deferral per item")
-        dfr = {k: a.get(k) or "" for k in ("goal", "deadline", "method", "revert")}
-        if not all(dfr.values()):
-            raise Refuse("deferred needs all four: --goal --deadline --method --revert")
-        try:
-            dl = datetime.date.fromisoformat(dfr["deadline"])
-        except ValueError:
-            raise Refuse("deadline must be YYYY-MM-DD")
-        t = datetime.date.fromisoformat(today())
-        if not (t <= dl <= t + datetime.timedelta(days=DEFER_MAX_DAYS)):
-            raise Refuse("deadline must be within %d days from today" % DEFER_MAX_DAYS)
-        extra["defer"] = dfr
+        extra["defer"] = check_deferral(e, a)
     return extra
+
+
+def check_task_ref(m, ref):
+    mm = re.match(r"^CSR #(\d+)$", ref)
+    if not mm:
+        raise Refuse("task ref must be `CSR #N`")
+    try:
+        _st, texts, _ids = board_post(mm.group(1))
+    except BoardError as exc:
+        raise Refuse("board unreachable: %s" % exc)
+    if not any(m["id"] in t for t in texts):
+        raise Refuse("CSR #%s body/comments do not contain %s" % (mm.group(1), m["id"]))
+
+
+def check_deferral(e, a):
+    """-> the four deferral fields; raise Refuse unless all are set and the deadline is in range."""
+    if any(d.get("disp") == "deferred" for _i, d in e["disps"]):
+        raise Refuse("at most one deferral per item")
+    dfr = {k: a.get(k) or "" for k in ("goal", "deadline", "method", "revert")}
+    if not all(dfr.values()):
+        raise Refuse("deferred needs all four: --goal --deadline --method --revert")
+    try:
+        dl = datetime.date.fromisoformat(dfr["deadline"])
+    except ValueError:
+        raise Refuse("deadline must be YYYY-MM-DD")
+    t = datetime.date.fromisoformat(today())
+    if not (t <= dl <= t + datetime.timedelta(days=DEFER_MAX_DAYS)):
+        raise Refuse("deadline must be within %d days from today" % DEFER_MAX_DAYS)
+    return dfr
 
 
 def check_fixed_ref(m, ref):
