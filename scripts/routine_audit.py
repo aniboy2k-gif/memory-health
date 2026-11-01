@@ -144,7 +144,9 @@ def discover(cfg):
         lvl1 = [os.path.join(top, n) for n in sorted(os.listdir(top))] if os.path.isdir(top) else []
         lvl2 = []
         for d in lvl1:
-            if os.path.isdir(d) and not os.path.basename(d).startswith("."):
+            n1 = os.path.basename(d)
+            # never descend into a worktree copy: its children duplicate a listed root
+            if os.path.isdir(d) and not n1.startswith(".") and not is_worktree_copy(n1) and n1 not in SKIP_DIRS:
                 lvl2.extend(os.path.join(d, n) for n in sorted(os.listdir(d)) if not n.startswith("."))
         for d in lvl1 + lvl2:
             n = os.path.basename(d)
@@ -256,16 +258,17 @@ def fill(units, budget):
 
 
 def pack(units):
-    shards, cur, acc = [], [], 0
-    for u in units:
-        if cur and acc + u[4] > SHARD_CHARS:
-            shards.append(cur)
-            cur, acc = [], 0
-        cur.append(u)
-        acc += u[4]
-    if cur:
-        shards.append(cur)
-    return shards
+    """first-fit decreasing into shards of <= SHARD_CHARS (a single larger unit gets its own shard)."""
+    shards = []
+    for u in sorted(units, key=lambda x: -x[4]):
+        for s in shards:
+            if s[0] + u[4] <= SHARD_CHARS:
+                s[0] += u[4]
+                s[1].append(u)
+                break
+        else:
+            shards.append([u[4], [u]])
+    return [s[1] for s in shards]
 
 
 def entry_line(p, s, e, whole):

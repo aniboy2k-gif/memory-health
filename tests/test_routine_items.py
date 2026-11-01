@@ -714,6 +714,15 @@ class TestShards(Base):
         with open(os.path.join(self.local, "audit-coverage.json")) as f:
             self.assertEqual(f.read(), '{"keep": 1}')
 
+    def test_shards_packed_first_fit_decreasing(self):
+        # path order a50, b50, c25, d25: sequential packing needs 3 shards, first-fit decreasing 2
+        for name, n in (("a.md", 50000), ("b.md", 50000), ("c.md", 25000), ("d.md", 25000)):
+            self.scope(name, n)
+        self.start()
+        _o, plan = self.plan()
+        self.assertEqual(len(plan["shards"]), 2)
+        self.assertTrue(all(sum(e["chars"] for e in s["entries"]) <= 75000 for s in plan["shards"]))
+
     def test_concurrent_covers_both_recorded(self):  # (h)
         a, b = self.scope("a.md", 60000), self.scope("b.md", 60000)
         self.start()
@@ -740,6 +749,8 @@ class TestShards(Base):
         ws = os.path.join(self.t, "ws")
         self.write(os.path.join(ws, "proj", "CLAUDE.md"), "x")
         self.write(os.path.join(ws, "proj-wt-1", "CLAUDE.md"), "x")
+        self.write(os.path.join(ws, "repo-wt-csr9", "sub", "CLAUDE.md"), "x")  # child of a worktree copy
+        os.makedirs(os.path.join(ws, "work-iso", "repo", ".claude"))
         self.config(discover_dirs=[ws])
         self.start()
         self.plan()
