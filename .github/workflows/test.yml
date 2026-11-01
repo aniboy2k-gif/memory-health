@@ -49,4 +49,6 @@ jobs:
         run: |
           /usr/bin/python3 -m unittest tests/test_routine_items.py
           /usr/bin/python3 -m unittest tests/test_routine_audit.py
-          bash tests/test-audit-record.sh
+          # audit-record.sh update-check refuses to run without `timeout` (GNU coreutils; not on macOS runners)
+          brew install coreutils
+          PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH" bash tests/test-audit-record.sh
