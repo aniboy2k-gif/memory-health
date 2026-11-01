@@ -378,7 +378,11 @@ cmd_post() {
       got="$(P="$p" awk -F'\t' '$1==ENVIRON["P"]{print $2}' "$covered")"
       if [ -z "$got" ]; then missing="$missing$p
 "; continue; fi
-      bad_n="$(printf '%s\n' "$got" | awk -v want="$nl" '($1+0)!=(want+0){print; exit}')"
+      # CSR #2491 (measured): the Read tool may show one empty line after a file's final newline,
+      # so a whole newline-terminated file also accepts N+1 (still unknowable without opening it)
+      local alt="$nl"
+      if [ "${p%%#L*}" = "$p" ] && [ -s "$p" ] && [ "$(tail -c 1 "$p" | od -An -c | tr -d ' ')" = '\n' ]; then alt=$((nl + 1)); fi
+      bad_n="$(printf '%s\n' "$got" | awk -v want="$nl" -v alt="$alt" '($1+0)!=(want+0) && ($1+0)!=(alt+0){print; exit}')"
       [ -z "$bad_n" ] || missing="$missing$p
 "
     done < "$run/private.tsv"

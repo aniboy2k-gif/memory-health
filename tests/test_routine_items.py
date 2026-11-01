@@ -905,6 +905,19 @@ class TestAuditRecord(Base):
                    % (doc, self.finding(doc, 2, "l2")))
         p = subprocess.run(["/bin/bash", ar, "post", run, rep], env=env, stdout=subprocess.PIPE, universal_newlines=True)
         self.assertIn("STATE=REPORTED", p.stdout, p.stdout)
+        # the Read tool may show an empty line after the final newline: N+1 is accepted, N+2 is not
+        whole = os.path.join(self.t, "shard2.txt")
+        self.write(whole, doc + "\n")
+        for shown, want in ((5, "STATE=REPORTED"), (6, "STATE=AUDIT_INCOMPLETE")):
+            p = subprocess.run(["/bin/bash", ar, "pre", "--shard", whole, "--cwd", self.t], env=env,
+                               stdout=subprocess.PIPE, universal_newlines=True)
+            r2 = [x.split("=", 1)[1] for x in p.stdout.split("\n") if x.startswith("RUN_DIR=")][0]
+            self.write(os.path.join(r2, "report.md"), "COVERED: %s last_line=%d\nFINDINGS_TOTAL 0\nFINDINGS high=0 medium=0 low=0\n"
+                       % (doc, shown))
+            p = subprocess.run(["/bin/bash", ar, "post", r2, os.path.join(r2, "report.md")], env=env,
+                               stdout=subprocess.PIPE, universal_newlines=True)
+            self.assertIn(want, p.stdout, (shown, p.stdout))
+            time.sleep(1.1)  # run dirs are named by second
         self.start()
         self.ok("ingest-audit", "--run-dir", run, "--part", "E")
         self.assertEqual(len(self.items("finding")), 1)
