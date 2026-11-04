@@ -14,6 +14,7 @@ Subcommands
   ingest-update --file F    P-B: stdout of `audit-record.sh update-check`
   ingest-doctor [--file F]  P-D: `claude doctor` (read-only)
   scan-unused [--file F]    P-F: only the skillUsage/pluginUsage keys of ~/.claude.json
+  scan-deps                 P-G: npm packages vendored inside skills/tools (dep_roots, npx_specs in channels.json)
   ingest-audit --run-dir D --part A|E   FINDING lines saved by `audit-record.sh post`
   plan-shards [--split N]   P-E: rolling full-scope audit plan
   cover --run-dir D --shard N           P-E: coverage after post + ingest-audit passed
@@ -40,9 +41,9 @@ LEASE_STALE_S = 1800
 DEFER_MAX_DAYS = 90
 OBS_WINDOW_DAYS = 45
 PEEK_CAP = 600
-PARTS = "ABCDEF"
+PARTS = "ABCDEFG"
 COVERAGE_KINDS = ("unknown", "unobserved_plugin")
-DISMISSABLE = ("finding", "update-available", "unused-extension", "plugin-version-changed", "unclassified")
+DISMISSABLE = ("finding", "update-available", "unused-extension", "plugin-version-changed", "unclassified", "dep-outdated")
 SEV_RANK = {"high": 3, "medium": 2, "low": 1}
 SOURCE_MAX = 500
 
@@ -376,7 +377,7 @@ def part_failed_id(part, run_id):
 
 
 def record_part(part, run_id, ok, reason=""):
-    """part row in parts.jsonl; FAILED also appends an open part_failed item; PASS refreshes C-F stamps."""
+    """part row in parts.jsonl; FAILED also appends an open part_failed item; PASS refreshes C-G stamps."""
     row = {"ts": iso(), "part": part, "run_id": run_id, "result": "PASS" if ok else "FAILED"}
     if reason:
         row["reason"] = reason
@@ -385,7 +386,7 @@ def record_part(part, run_id, ok, reason=""):
         f.flush()
         os.fsync(f.fileno())
     if ok:
-        if part in "CDEF":
+        if part in "CDEFG":
             atomic_write(stamp_path(part), "%d\n" % int(now()))
     else:
         it = make_item(part, "part_failed", part + run_id, "high", "part %s FAILED in run %s: %s" % (part, run_id, reason))
@@ -698,7 +699,7 @@ def cmd_start(force):
 
 def cmd_part_fail(part, reason):
     if part not in PARTS or len(reason) < 10:
-        raise Refuse("part-fail needs --part A-F and --reason (>= 10 chars)")
+        raise Refuse("part-fail needs --part A-G and --reason (>= 10 chars)")
     with Mutate():
         record_part(part, current_run(load_ledger()[0]), False, reason)
     print("PART %s FAILED" % part)

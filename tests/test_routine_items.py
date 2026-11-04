@@ -80,7 +80,7 @@ class Base(unittest.TestCase):
         v = "%d\n" % (self.now - age_days * DAY)
         for n in ("claude-md-audit-last", "skill-update-check-last"):
             self.write(os.path.join(self.state, n), v)
-        for p in "CDEF":
+        for p in "CDEFG":
             self.write(os.path.join(self.local, "part-%s-last" % p), v)
 
     def write(self, path, text, mode="w"):
@@ -470,7 +470,7 @@ class TestStatusRuns(Base):
     def test_part_failed_task_exit_4_in_same_run(self):
         self.fresh_stamps(age_days=40)
         run = self.start()
-        for p in ("B", "C", "D", "E", "F"):
+        for p in ("B", "C", "D", "E", "F", "G"):
             self.write(os.path.join(self.local, "parts.jsonl"),
                        json.dumps({"part": p, "run_id": run, "result": "PASS", "ts": "t"}) + "\n", "a")
         d = self.audit_run(["FINDINGS_TOTAL 0"], state="AUDIT_INCOMPLETE")
@@ -554,6 +554,153 @@ class TestParts(Base):
         self.write(out, "SKILL: s1 channel=npm status=update-available upstream=2.1\nSTATE=UPDATE_CHECK_PASS\n")
         self.ok("ingest-update", "--file", out)
         self.assertEqual(len(self.items("update-available")), 2)
+
+
+# ── P-G: embedded npm dependency freshness ──────────────────────────────────
+FAKE_NPM = """#!/bin/sh
+# fake npm for TestDeps: behaviour chosen per test through FAKE_NPM_* env vars
+echo "$1 $(pwd)" >> "$FAKE_NPM_LOG"
+case "$1" in
+  config) printf '%s' "$FAKE_NPM_CONFIG_OUT"; exit "${FAKE_NPM_CONFIG_RC:-0}" ;;
+  outdated)
+    [ -n "$FAKE_NPM_OUTDATED_SLEEP" ] && exec sleep "$FAKE_NPM_OUTDATED_SLEEP"
+    printf '%s' "$FAKE_NPM_OUTDATED_OUT"; exit "${FAKE_NPM_OUTDATED_RC:-0}" ;;
+  view) printf '%s\\n' "$FAKE_NPM_VIEW_OUT"; exit "${FAKE_NPM_VIEW_RC:-0}" ;;
+esac
+exit 64
+"""
+OUTDATED = json.dumps({"left-pad": {"current": "1.0.0", "wanted": "1.0.1", "latest": "1.3.0"},
+                       "chalk": {"current": "4.1.0", "latest": "5.3.0"}})
+
+
+class TestDeps(Base):
+    def setUp(self):
+        Base.setUp(self)
+        self.bin = os.path.join(self.t, "bin")
+        self.write(os.path.join(self.bin, "npm"), FAKE_NPM)
+        os.chmod(os.path.join(self.bin, "npm"), 0o755)
+        self.npm_log = os.path.join(self.t, "npm.log")
+        self.root = os.path.join(self.t, "tool-a")
+        os.makedirs(os.path.join(self.root, "node_modules"))
+        self.config(dep_roots=[self.root])
+
+    def deps(self, path=None, **fake):
+        env = {"FAKE_NPM_LOG": self.npm_log, "MH_DEP_TIMEOUT_S": 1, "FAKE_NPM_CONFIG_OUT": "{}", "FAKE_NPM_OUTDATED_OUT": "{}"}
+        env.update({"FAKE_NPM_" + k.upper(): v for k, v in fake.items()})
+        env["PATH"] = path if path is not None else self.bin + os.pathsep + os.environ.get("PATH", "")
+        return self.run_ri("scan-deps", **env)
+
+    def dep_items(self):
+        return [r for r in self.items() if r["kind"].startswith("dep-")]
+
+    def assert_one_failure(self, p, kind, reason):
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        its = self.dep_items()
+        self.assertEqual([(r["kind"], r.get("reason")) for r in its], [(kind, reason)])
+        self.assertIn("part_G=FAILED", p.stdout)
+        self.assertEqual(len(self.items("part_failed")), 1)
+
+    def npm_calls(self):
+        try:
+            with open(self.npm_log) as f:
+                return [x.split(" ", 1)[0] for x in f.read().split("\n") if x]
+        except OSError:
+            return []
+
+    def test_a_outdated_exit_1_valid_json(self):
+        self.start()
+        p = self.deps(outdated_out=OUTDATED, outdated_rc=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("INGESTED items=2 part_G=PASS", p.stdout)
+        its = self.dep_items()
+        self.assertEqual(sorted((r["kind"], r["package"], r["latest"]) for r in its),
+                         [("dep-outdated", "chalk", "5.3.0"), ("dep-outdated", "left-pad", "1.3.0")])
+        lp = [r for r in its if r["package"] == "left-pad"][0]
+        self.assertEqual((lp["current"], lp["wanted"], lp["root"], lp["sev"]), ("1.0.0", "1.0.1", self.root, "low"))
+        self.assertIn("tool-a", lp["summary"])
+        self.assertEqual(len({r["id"] for r in its}), 2)
+        self.assertEqual(self.items("part_failed"), [])
+        self.assertIn("G", [r["part"] for r in [json.loads(x) for x in open(os.path.join(self.local, "parts.jsonl"))]
+                            if r["result"] == "PASS"])
+
+    def test_b_exit_0_empty_object(self):
+        self.start()
+        p = self.deps(outdated_out="{}", outdated_rc=0)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(self.dep_items(), [])
+        self.assertIn("part_G=PASS", p.stdout)
+
+    def test_c_exit_2(self):
+        self.start()
+        self.assert_one_failure(self.deps(outdated_out=OUTDATED, outdated_rc=2), "dep-scan-failed", "exit-2")
+
+    def test_d_non_json(self):
+        self.start()
+        self.assert_one_failure(self.deps(outdated_out="npm WARN something\n", outdated_rc=1), "dep-scan-failed", "non-json")
+
+    def test_e_timeout(self):
+        self.start()
+        self.assert_one_failure(self.deps(outdated_sleep=3), "dep-scan-failed", "timeout")
+
+    def test_f_npm_absent(self):
+        self.start()
+        self.assert_one_failure(self.deps(path=os.path.join(self.t, "empty-bin") + os.pathsep + "/usr/bin:/bin"),
+                                "dep-scan-failed", "npm-not-found")
+        self.assertEqual(self.npm_calls(), [])
+
+    def test_g_dep_roots_absent(self):
+        self.config()
+        self.start()
+        self.assert_one_failure(self.deps(outdated_out=OUTDATED, outdated_rc=1), "dep-roots-unset", None)
+        self.assertEqual(self.npm_calls(), [])
+
+    def test_h_scoped_registry_override(self):
+        self.start()
+        cfg = json.dumps({"@acme:registry": "https://npm.example.invalid/", "registry": "https://registry.npmjs.org/"})
+        self.assert_one_failure(self.deps(config_out=cfg, outdated_out=OUTDATED, outdated_rc=1),
+                                "dep-scan-failed", "scoped-registry-override")
+        self.assertEqual(self.npm_calls(), ["config"])
+
+    def test_i_error_envelope(self):
+        self.start()
+        env = json.dumps({"error": {"code": "ENOTCACHED", "summary": "request to registry failed: cache mode"}})
+        self.assert_one_failure(self.deps(outdated_out=env, outdated_rc=1), "dep-scan-failed", "error-envelope:ENOTCACHED")
+        self.assertEqual(self.items("dep-outdated"), [])
+
+    def malformed(self, bad):
+        self.start()
+        self.assert_one_failure(self.deps(outdated_out=json.dumps(bad), outdated_rc=1), "dep-scan-failed", "malformed")
+        self.assertEqual(self.items("dep-outdated"), [])
+
+    def test_j_malformed_string_value(self):
+        self.malformed({"left-pad": "1.0.0", "chalk": {"current": "4.1.0", "latest": "5.3.0"}})
+
+    def test_j_malformed_missing_latest(self):
+        self.malformed({"left-pad": {"current": "1.0.0", "wanted": "1.0.1"}})
+
+    def test_k_npx_cached_older_than_registry(self):
+        self.config(dep_roots=[self.root], npx_specs=["demo-cli"])
+        for h, ver, age in (("aaa", "1.0.0", 2 * DAY), ("bbb", "1.1.0", DAY)):
+            pj = os.path.join(self.home, ".npm", "_npx", h, "node_modules", "demo-cli", "package.json")
+            self.write(pj, json.dumps({"name": "demo-cli", "version": ver}))
+            t = time.time() - age
+            os.utime(pj, (t, t))
+        self.start()
+        p = self.deps(outdated_out="{}", view_out="2.0.0")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        its = self.dep_items()
+        self.assertEqual([(r["kind"], r["current"], r["latest"], r["cache_label"]) for r in its],
+                         [("dep-outdated", "1.1.0", "2.0.0", "last-cached")])
+
+    def test_l_rerun_no_duplicates(self):
+        self.start()
+        self.deps(outdated_out=OUTDATED, outdated_rc=1)
+        p = self.deps(outdated_out=OUTDATED, outdated_rc=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("INGESTED items=0 part_G=PASS", p.stdout)
+        its = self.items("dep-outdated")
+        self.assertEqual(len(its), 2)
+        self.assertEqual(len({r["id"] for r in its}), 2)
 
 
 # ── V2: hook + watchdog ─────────────────────────────────────────────────────
