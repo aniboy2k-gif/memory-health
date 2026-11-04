@@ -700,7 +700,7 @@ class TestParts(Base):
 # ── P-G: embedded npm dependency freshness ──────────────────────────────────
 FAKE_NPM = """#!/bin/sh
 # fake npm for TestDeps: behaviour chosen per test through FAKE_NPM_* env vars
-echo "$1 $(pwd)" >> "$FAKE_NPM_LOG"
+echo "$1 $(pwd) | $*" >> "$FAKE_NPM_LOG"
 case "$1" in
   config) printf '%s' "$FAKE_NPM_CONFIG_OUT"; exit "${FAKE_NPM_CONFIG_RC:-0}" ;;
   outdated)
@@ -842,6 +842,58 @@ class TestDeps(Base):
         its = self.items("dep-outdated")
         self.assertEqual(len(its), 2)
         self.assertEqual(len({r["id"] for r in its}), 2)
+
+    # regression guards found missing by the CSR #2497 design-conformance check (mutations M2-M10)
+    def test_m_registry_pinned_and_cwd_is_root(self):
+        self.start()
+        self.assertEqual(self.deps(outdated_out=OUTDATED, outdated_rc=1).returncode, 0)
+        with open(self.npm_log) as f:
+            calls = [x.split(" | ", 1) for x in f.read().split("\n") if x]
+        root = os.path.realpath(self.root)
+        self.assertEqual([(h.split(" ", 1)[1], args) for h, args in calls],
+                         [(root, "config list --json"),
+                          (root, "outdated --json --registry https://registry.npmjs.org/")])
+
+    def test_n_root_without_node_modules_skipped(self):
+        bare, linked = os.path.join(self.t, "tool-b"), os.path.join(self.t, "tool-c")
+        os.makedirs(bare)
+        os.makedirs(linked)
+        os.makedirs(os.path.join(self.t, "real-nm"))
+        os.symlink(os.path.join(self.t, "real-nm"), os.path.join(linked, "node_modules"))
+        self.config(dep_roots=[bare, linked])
+        self.start()
+        p = self.deps()
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("SKIP tool-b (no node_modules)", p.stdout)
+        self.assertEqual(self.npm_calls(), ["config", "outdated"])  # only the symlinked root is scanned
+
+    def test_o_dep_outdated_dismissable(self):
+        self.start()
+        self.deps(outdated_out=OUTDATED, outdated_rc=1)
+        iid = self.items("dep-outdated")[0]["id"]
+        p = self.run_ri("dispose", iid, "--disp", "dismissed", "--reason", "owner keeps this pin on purpose for now")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+
+    def test_p_part_g_due_forced_and_stamped(self):
+        p = self.run_ri("start", "--force")
+        self.assertIn("DUE_PARTS=A,B,C,D,E,F,G", p.stdout)
+        stamp = os.path.join(self.local, "part-G-last")
+        os.remove(stamp)  # setUp's fresh_stamps() already wrote it
+        self.assertEqual(self.deps().returncode, 0)
+        self.assertTrue(os.path.exists(stamp))
+
+    def test_q_default_timeout_60s(self):
+        sys.path.insert(0, SCRIPTS)
+        try:
+            import routine_sources as rs
+        finally:
+            sys.path.remove(SCRIPTS)
+        old = os.environ.pop("MH_DEP_TIMEOUT_S", None)
+        try:
+            self.assertEqual(rs.dep_timeout(), 60)
+        finally:
+            if old is not None:
+                os.environ["MH_DEP_TIMEOUT_S"] = old
 
 
 # ── V2: hook + watchdog ─────────────────────────────────────────────────────
