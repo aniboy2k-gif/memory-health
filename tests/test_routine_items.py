@@ -59,7 +59,8 @@ class Base(unittest.TestCase):
         return p
 
     def config(self, **over):
-        cfg = {"channels": [{"id": "chan1", "type": "log_lines", "path": self.log,
+        # chan1 lists demo@mk: only a listing channel's observation counts (design L85)
+        cfg = {"channels": [{"id": "chan1", "type": "log_lines", "path": self.log, "plugins": ["demo@mk"],
                              "events": [{"re": "HOLD", "kind": "hold", "sev": "high"},
                                         {"re": r"demo up to date \((?P<version>[^)]+)\)", "observe": True, "plugin": "demo@mk"}],
                              "ignore": ["^ok "]}],
@@ -68,13 +69,30 @@ class Base(unittest.TestCase):
         self.write(os.path.join(self.local, "channels.json"), json.dumps(cfg))
         return cfg
 
-    def plugins(self, versions, markets, settings=None):
+    def plugins(self, versions, markets, settings=None, helpers=(), claudeai=None):
+        """markets get a catalog (installLocation) listing their plugins; names in `helpers` declare headersHelper."""
         d = os.path.join(self.home, ".claude", "plugins")
         os.makedirs(d, exist_ok=True)
         self.write(os.path.join(d, "installed_plugins.json"),
                    json.dumps({"version": 2, "plugins": {k: [{"version": v}] for k, v in versions.items()}}))
-        self.write(os.path.join(d, "known_marketplaces.json"), json.dumps(markets))
+        for name, ents in (("known_marketplaces.json", markets), ("known_marketplaces_claudeai.json", claudeai)):
+            if ents is None and os.path.exists(os.path.join(d, name)):
+                os.remove(os.path.join(d, name))
+            elif ents is not None:
+                self.write(os.path.join(d, name), json.dumps(
+                    {mk: dict(e, installLocation=e.get("installLocation") or self.catalog(mk, versions, helpers))
+                     for mk, e in ents.items()}))
         self.write(os.path.join(self.home, ".claude", "settings.json"), json.dumps(settings or {}))
+
+    def catalog(self, mk, versions, helpers):
+        root = os.path.join(self.home, ".claude", "plugins", "marketplaces", mk)
+        ents = []
+        for full in versions:
+            name, _s, m = full.partition("@")
+            if m == mk:
+                ents.append(dict({"name": name, "source": "./" + name}, **({"headersHelper": "h"} if full in helpers else {})))
+        self.write(os.path.join(root, ".claude-plugin", "marketplace.json"), json.dumps({"name": mk, "plugins": ents}))
+        return root
 
     def fresh_stamps(self, age_days=0):
         v = "%d\n" % (self.now - age_days * DAY)
@@ -131,6 +149,15 @@ class Base(unittest.TestCase):
         self.write(os.path.join(self.state, "audit.jsonl"),
                    json.dumps({"part": "audit", "state": state, "run_dir": d, "dry_run": False}) + "\n", "a")
         return d
+
+    def part_row(self, part, run, result, ts):
+        self.write(os.path.join(self.local, "parts.jsonl"),
+                   json.dumps({"part": part, "run_id": run, "result": result, "ts": ts}) + "\n", "a")
+
+    def all_pass(self, run, tag, skip=()):
+        for p in self.rows("run")[-1]["due_parts"]:
+            if p not in skip:
+                self.part_row(p, run, "PASS", "%s-%s" % (tag, p))
 
     def finding(self, path, line, quote, sev="medium", summary="s"):
         return "FINDING " + json.dumps({"sev": sev, "path": path, "line": line, "quote": quote, "summary": summary},
@@ -243,6 +270,25 @@ class TestChannels(Base):
         self.ok("scan-channels")
         self.assertEqual([r["summary"] for r in self.items("unknown")], ["required channel nope missing or unread"])
 
+    def test_rewritten_prefix_resets_cursor(self):  # X10 M16
+        self.logline("ok aaaa")
+        self.start()
+        self.ok("scan-channels")
+        self.write(self.log, "ok bbbb\nHOLD x\n")  # same first length, different bytes, grown
+        self.ok("scan-channels")
+        self.assertEqual((len(self.items("cursor_reset")), len(self.items("hold"))), (1, 1))
+
+    def test_stale_runner_stamp_and_registry_backup(self):  # X10 M13 + M14
+        stamp = os.path.join(self.t, "runner.stamp")
+        self.write(stamp, "%d\n" % (self.now - 48 * 3600))
+        cfg = self.config(channels=[{"id": "runner", "type": "stamp", "path": stamp, "max_age_h": 24}])
+        self.start()
+        self.ok("scan-channels")
+        self.assertEqual(len(self.items("runner-stale")), 1)
+        bk = os.path.join(self.home, ".claude", "backups", "memory-health-local")
+        with open(os.path.join(bk, os.listdir(bk)[0])) as f:
+            self.assertEqual(json.load(f), cfg)
+
     def test_boundary_deny_regenerated(self):
         self.config(project_roots=[os.path.join(self.t, "proj-x")])
         self.start()
@@ -313,6 +359,67 @@ class TestPlugins(Base):
         self.plugins({"demo@mk": "1.0.0"}, {"mk": {"autoUpdate": True, "lastUpdated": "2026-10-31T00:00:00.000Z"}})
         self.ok("scan-channels")
         self.assertNotIn(uid, self.open_ids())
+
+    def unobserved(self):
+        self.start()
+        self.ok("scan-channels")
+        return sorted(r["plugin"] for r in self.items("unobserved_plugin") if r["id"] in self.open_ids())
+
+    def test_marketplace_refresh_is_one_event(self):  # X5 R5
+        self.start()
+        self.ok("scan-channels")
+        self.plugins({"demo@mk": "1.0.0"}, {"mk": {"lastUpdated": "2026-11-01T00:00:00.000Z"}})
+        p = self.ok("pending")
+        self.assertEqual([x for x in p.stdout.split("\n") if x],
+                         ["low plugins: marketplace mk lastUpdated 2026-10-31T00:00:00.000Z -> 2026-11-01T00:00:00.000Z"])
+
+    def test_old_cursor_is_silent_baseline_then_stores_map(self):  # X5 R5b
+        self.write(os.path.join(self.local, "items.jsonl"), json.dumps(
+            {"ts": "t", "type": "cursor", "channel": "plugins", "versions": {"demo@mk": "1.0.0"}}) + "\n")
+        self.assertEqual(self.ok("pending").stdout, "")
+        self.start()
+        self.ok("scan-channels")
+        cur = [r for r in self.rows("cursor") if r["channel"] == "plugins"][-1]
+        self.assertEqual(cur.get("lastUpdated"), {"mk": "2026-10-31T00:00:00.000Z"})
+
+    def test_observation_counts_only_from_listing_channel(self):  # X8
+        other = os.path.join(self.t, "logs", "b.log")
+        self.write(other, "demo up to date (1.0.0)\n")
+        cfg = self.config()
+        chan2 = dict(cfg["channels"][0], id="chan2", path=other)
+        del chan2["plugins"]
+        self.config(channels=cfg["channels"] + [chan2])
+        self.assertEqual(self.unobserved(), ["demo@mk"])
+
+    def test_default_on_official_and_claudeai(self):  # X9
+        self.plugins({"a@claude-code-plugins": "1", "b@knowledge-work-plugins": "1", "c@claudeai-team": "1",
+                      "d@claudeai-x": "1"}, {"claude-code-plugins": {}, "knowledge-work-plugins": {}, "claudeai-x": {}},
+                     claudeai={"claudeai-team": {}})
+        self.assertEqual(self.unobserved(), ["b@knowledge-work-plugins", "d@claudeai-x"])
+
+    def test_malformed_claudeai_file_is_unknown(self):  # X9
+        self.write(os.path.join(self.home, ".claude", "plugins", "known_marketplaces_claudeai.json"), "{bad")
+        self.unobserved()
+        self.assertEqual([r["summary"].startswith("plugins json unreadable") for r in self.items("unknown")], [True])
+
+    def test_headers_helper_plugin_needs_observation(self):  # A1
+        mk = "claude-plugins-official"
+        self.plugins({"p1@" + mk: "1", "p2@" + mk: "1"}, {mk: {}}, helpers=("p2@" + mk,))
+        self.assertEqual(self.unobserved(), ["p2@" + mk])
+        self.plugins({"p1@" + mk: "1"}, {mk: {"installLocation": os.path.join(self.t, "no-catalog")}})
+        self.ok("scan-channels")
+        self.assertIn("p1@" + mk, [r["plugin"] for r in self.items("unobserved_plugin") if r["id"] in self.open_ids()])
+
+    def test_env_disables_auto_update(self):  # X10 M18
+        self.plugins({"demo@mk": "1.0.0"}, {"mk": {"autoUpdate": True}})
+        self.start()
+        self.ok("scan-channels", DISABLE_AUTOUPDATER="1")
+        self.assertEqual(len(self.items("unobserved_plugin")), 1)
+
+    def test_stale_marketplace_with_auto_update_on(self):  # X10 M19
+        self.plugins({"demo@mk": "1.0.0"}, {"mk": {"autoUpdate": True, "lastUpdated": "2026-09-01T00:00:00.000Z"}})
+        self.unobserved()
+        self.assertEqual(len(self.items("marketplace-stale")), 1)
 
     def test_unobserved_task_gives_exit_4(self):  # (m) (j part 3)
         self.start()
@@ -513,6 +620,16 @@ class TestStatusRuns(Base):
         self.assertEqual(self.status()[0], 2)
         self.assertIn("ledger unreadable", self.ok("peek").stdout)
 
+    def test_status_without_both_flags_is_open_unchecked(self):  # X11
+        p = self.ok("status")
+        self.assertIn("STATUS OPEN_UNCHECKED exit=0", p.stdout)
+        got = [self.status(*a) for a in ((), ("--check-refs",))]
+        self.assertEqual([(c, s["status"]) for c, s in got], [(0, "OPEN_UNCHECKED")] * 2)
+
+    def test_interval_clamped(self):  # X10 M1
+        self.logline("HOLD")
+        self.assertIn("interval 45d", self.ok("peek", CLAUDE_MD_AUDIT_INTERVAL=100).stdout)
+
 
 # ── P-B / P-D / P-F ─────────────────────────────────────────────────────────
 class TestParts(Base):
@@ -545,6 +662,30 @@ class TestParts(Base):
         self.write(cj, json.dumps({"skillUsage": {}, "pluginUsage": {"demo@mk": {"lastUsedAt": self.now * 1000}}}))
         self.ok("scan-unused", "--file", cj)
         self.assertEqual([r["summary"].split(" ")[1] for r in self.items("unused-extension")], ["idle-skill"])
+
+    def test_doctor_non_zero_exit_fails(self):  # X10 M4
+        b = os.path.join(self.t, "bin")
+        self.write(os.path.join(b, "claude"), "#!/bin/sh\nprintf 'Auto-updates: on\\nAuto-update channel: latest\\n"
+                                              "Last update attempt: success\\n'\nexit 1\n")
+        os.chmod(os.path.join(b, "claude"), 0o755)
+        self.start()
+        self.assertEqual(self.run_ri("ingest-doctor", PATH=b + ":" + os.environ["PATH"]).returncode, 1)
+        self.assertEqual(len(self.items("part_failed")), 1)
+
+    def test_doctor_failed_update_attempt_is_item(self):  # X10 M26
+        f = os.path.join(self.t, "doc.txt")
+        self.write(f, "Auto-updates: on\nAuto-update channel: latest\nLast update attempt: failed (network)\n")
+        self.start()
+        self.ok("ingest-doctor", "--file", f)
+        self.assertEqual(len(self.items("cli-update-failed")), 1)
+
+    def test_unused_after_60_days(self):  # X10 M5
+        cj = os.path.join(self.t, "claude.json")
+        old = (self.now - 61 * DAY) * 1000
+        self.write(cj, json.dumps({"skillUsage": {}, "pluginUsage": {"demo@mk": {"lastUsedAt": old}}}))
+        self.start()
+        self.ok("scan-unused", "--file", cj)
+        self.assertEqual(len(self.items("unused-extension")), 1)
 
     def test_update_items_keyed_by_upstream(self):
         out = os.path.join(self.t, "upd.txt")

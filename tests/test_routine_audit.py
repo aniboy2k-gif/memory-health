@@ -85,6 +85,28 @@ class TestFindings(Base):
         self.assertEqual(self.run_ri("dispose", iid, "--disp", "fixed", "--ref", "CSR #906 c#1").returncode, 1)
         self.ok("dispose", iid, "--disp", "fixed", "--ref", sha)
 
+    def medium_finding(self, text="meh"):
+        f = os.path.join(self.t, "doc.md")
+        self.write(f, text + "\n")
+        self.start()
+        d = self.audit_run([self.finding(f, 1, text), "FINDINGS_TOTAL 1"])
+        self.ok("ingest-audit", "--run-dir", d, "--part", "E")
+        return f, self.items("finding")[0]["id"]
+
+    def test_finding_refuses_verified(self):  # X1
+        _f, iid = self.medium_finding()
+        before = self.ledger_bytes()
+        p = self.run_ri("dispose", iid, "--disp", "verified", "--reason", "looked at it and it is fine now")
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(self.ledger_bytes(), before)
+
+    def test_lapsed_dismissal_not_in_do_not_report(self):  # X4
+        f, iid = self.medium_finding()
+        self.ok("dispose", iid, "--disp", "dismissed", "--reason", "style only, owner wording kept")
+        self.assertEqual(self.ok("do-not-report").stdout, "%s | meh\n" % f)
+        self.write(f, "edited\nmeh\n")
+        self.assertEqual(self.ok("do-not-report").stdout, "")
+
     def test_medium_finding_accepts_dismissed(self):
         f = os.path.join(self.t, "doc.md")
         self.write(f, "meh\n")
@@ -167,9 +189,58 @@ class TestShards(Base):
         self.write(os.path.join(self.local, "audit-coverage.json"), json.dumps(cov))
         new = [self.scope("new%d.md" % i, 70000) for i in range(6)]
         _o, plan = self.plan()
+        # fixture: group 1 = 6 x 70,000 > 300,000, each below the 75,000 shard cap, MONTH_BUDGET 600,000 above the floor
         chars = sum(e["chars"] for s in plan["shards"] for e in s["entries"] if e["path"] in new)
-        self.assertGreaterEqual(chars, 300000 - 70000)
-        self.assertGreaterEqual(chars, 4 * 70000)
+        self.assertGreaterEqual(chars, 300000)  # X6: the reserve is a floor (was lowered to 300000 - 70000)
+
+    def test_oversize_group1_file_skipped_floor_still_reached(self):  # X6
+        old = [self.scope("old%d.md" % i, 70000) for i in range(12)]
+        self.start()
+        cov = {p: {"sha256": "stale", "ranges": [[1, 70]], "complete": True, "audited_at": "2026-01-01T00:00:00Z"} for p in old}
+        self.write(os.path.join(self.local, "audit-coverage.json"), json.dumps(cov))
+        big = self.scope("aaa.md", 80000, line=80000)  # one 80,000-char line: a single unit above the shard cap
+        new = [self.scope("new%d.md" % i, 70000) for i in range(6)]
+        _o, plan = self.plan()
+        paths = [e["path"] for s in plan["shards"] for e in s["entries"]]
+        self.assertGreaterEqual(70000 * sum(1 for p in paths if p in new), 300000)
+        self.assertNotIn(big, paths)
+
+    def test_split_halves_a_shard(self):  # X10 M22
+        self.scope("a.md", 3000)
+        self.start()
+        self.plan()
+        self.ok("plan-shards", "--split", "1")
+        with open(os.path.join(self.local, "shard-plan.json")) as f:
+            sh = json.load(f)["shards"]
+        self.assertEqual([(e["start"], e["end"], s["split"]) for s in sh for e in s["entries"]], [(1, 2, True), (3, 3, True)])
+
+    def test_tests_and_fixtures_dirs_out_of_scope(self):  # X10 M25
+        for d in ("tests", "fixtures"):
+            self.write(os.path.join(self.home, ".claude", "skills", "s", d, "x.md"), "y\n")
+        self.scope("a.md", 3000)
+        self.start()
+        _o, plan = self.plan()
+        self.assertEqual([os.path.basename(e["path"]) for s in plan["shards"] for e in s["entries"]], ["a.md"])
+
+    def test_missing_listed_root_is_unknown(self):  # X10 M15
+        self.config(project_roots=[os.path.join(self.t, "gone")])
+        self.start()
+        self.plan()
+        self.assertEqual([r["summary"].split(" ", 4)[:4] for r in self.items("unknown")], [["listed", "project", "root", "missing"]])
+
+    def test_cover_refused_when_post_not_reported(self):  # X10 M9
+        self.scope("a.md", 3000)
+        self.start()
+        _o, plan = self.plan()
+        run = os.path.join(self.t, "runs", "p")
+        os.makedirs(run)
+        shutil.copy(plan["shards"][0]["manifest"], os.path.join(run, "manifest.txt"))
+        self.write(os.path.join(run, "findings.txt"), "FINDINGS_TOTAL 0\n")
+        aj = os.path.join(self.state, "audit.jsonl")
+        self.write(aj, json.dumps({"part": "audit", "state": "REPORTED", "run_dir": run}) + "\n", "a")
+        self.ok("ingest-audit", "--run-dir", run, "--part", "E")
+        self.write(aj, json.dumps({"part": "audit", "state": "AUDIT_INCOMPLETE", "run_dir": run}) + "\n", "a")
+        self.assertEqual(self.run_ri("cover", "--run-dir", run, "--shard", "1").returncode, 1)
 
     def test_cover_refused_without_ingest_leaves_file_identical(self):
         self.scope("a.md", 3000)
@@ -276,6 +347,22 @@ class TestBoundary(Base):
         shutil.move(r, r2)
         subprocess.check_call(["git", "-C", r2, "branch", "-q", "--unset-upstream"])
         self.assertEqual(self.check(r2, path).returncode, 1)  # no @{u}, no origin/HEAD
+
+
+    def blocked_after(self, text, msg="c"):
+        self.config(project_roots=[os.path.join(self.t, "secretproj")])
+        self.start()
+        self.ok("scan-channels")
+        r, g = self.repo()
+        self.write(os.path.join(r, "a.txt"), text, "a")
+        subprocess.check_call(g + ["commit", "-qam", msg])
+        return self.check(r, self.fake_gitleaks()).returncode
+
+    def test_basename_joined_by_hyphen_blocks(self):  # X7
+        self.assertEqual(self.blocked_after("see secretproj-suffix here\n"), 1)
+
+    def test_commit_message_scanned(self):  # X10 M20
+        self.assertEqual(self.blocked_after("clean\n", msg="from /" + "Volumes/x/y"), 1)
 
 
 # ── integration: audit-record.sh pre --shard / post FINDING ─────────────────

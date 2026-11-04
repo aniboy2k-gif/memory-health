@@ -23,13 +23,16 @@ def validate_disp(e, disp, a, rows):
         raise Refuse("part_failed accepts only fixed or task")
     if disp == "dismissed" and kind not in DISMISSABLE:
         raise Refuse("dismissed is not allowed for kind=%s" % kind)
+    # a denylist, not an allowlist: observation kinds are open-ended (channel kinds come from channels.json),
+    # so a hand list would refuse `verified` for unlisted observation kinds; coverage and part_failed refuse above
+    if kind == "finding" and disp == "verified":
+        raise Refuse("verified is not allowed for kind=finding (use fixed, dismissed, deferred or task)")
     extra = {}
     if disp == "fixed":
         if kind == "part_failed":
-            ok = any(r.get("part") == m.get("part") and r.get("run_id") == m.get("run_id")
-                     and r.get("result") == "PASS" and r.get("ts") == ref for r in part_rows())
+            ok = any(r.get("ts") == ref for r in passes_after_fail(part_rows(), m.get("part"), m.get("run_id")) or [])
             if not ok:
-                raise Refuse("part_failed fixed needs ref = ts of a later PASS row of the same part and run")
+                raise Refuse("part_failed fixed needs ref = ts of a PASS row of the same part after its last FAILED row")
         else:
             check_fixed_ref(m, ref)
     elif disp == "task":
@@ -45,6 +48,27 @@ def validate_disp(e, disp, a, rows):
     elif disp == "deferred":
         extra["defer"] = check_deferral(e, a)
     return extra
+
+
+def passes_after_fail(prow, part, run_id):
+    """PASS rows of `part` (any run) after the last FAILED row of (part, run_id), by parts.jsonl append
+    position (not ts, not run order); None when that FAILED row is missing (callers fail closed)."""
+    fails = [k for k, r in enumerate(prow)
+             if r.get("part") == part and r.get("run_id") == run_id and r.get("result") == "FAILED"]
+    if not fails:
+        return None
+    return [r for r in prow[fails[-1] + 1:] if r.get("part") == part and r.get("result") == "PASS"]
+
+
+def part_failed_blocking(m, prow, run_row):
+    """a task-disposed part_failed blocks until a PASS of its part follows its last FAILED row; with --run
+    it also blocks while that run's last row for a due part is not PASS (design L99, order-aware)."""
+    if not passes_after_fail(prow, m.get("part"), m.get("run_id")):
+        return True
+    if run_row is not None and m.get("part") in (run_row.get("due_parts") or []):
+        mine = [r for r in prow if r.get("part") == m.get("part") and r.get("run_id") == run_row.get("run_id")]
+        return not mine or mine[-1].get("result") != "PASS"
+    return False
 
 
 def check_task_ref(m, ref):

@@ -459,7 +459,9 @@ def compute_status(check_refs=False, run=None):
     code2, notes, opened, blocked = [], [], [], []
     if unknown:
         code2.append("ledger unreadable (UNKNOWN)")
-    refs = {}
+    refs, prow = {}, part_rows()
+    import routine_dispose as rd  # imported here: routine_dispose imports this module
+    lr = latest(rows, "run") if run is not None else None
     for i, e in sorted(f.items()):
         st = item_state(e)
         kind = e["meta"].get("kind")
@@ -473,12 +475,13 @@ def compute_status(check_refs=False, run=None):
         di, d = e["disps"][-1]
         if d.get("disp") != "task":
             continue
-        if kind in COVERAGE_KINDS or kind == "part_failed":
+        if kind in COVERAGE_KINDS or (kind == "part_failed" and rd.part_failed_blocking(
+                e["meta"], prow, lr if lr and lr.get("run_id") == run else None)):
             blocked.append(i)
         if check_refs:
             _status_task_ref(i, d, refs, code2, opened)
     if run is not None:
-        _status_run_parts(rows, f, run, code2, blocked)
+        _status_run_parts(rows, f, run, code2, blocked, prow)
     open_ids = {o[0] for o in opened}
     blocked = sorted({b for b in blocked if b not in open_ids})
     code = 2 if code2 else 1 if opened else 4 if blocked else 0
@@ -505,13 +508,14 @@ def _status_task_ref(i, d, refs, code2, opened):
         opened.append((i, "unlinked_task"))
 
 
-def _status_run_parts(rows, f, run, code2, blocked):
-    """--run: every due part of that run needs a PASS row or a task-disposed part_failed item."""
+def _status_run_parts(rows, f, run, code2, blocked, prow):
+    """--run: every due part of that run needs its last row in that run to be PASS, or a task-disposed part_failed item."""
     lr = latest(rows, "run")
     if not lr or lr.get("run_id") != run:
         code2.append("--run %s is not the latest run" % run)
         return
-    passed = {r.get("part") for r in part_rows() if r.get("run_id") == run and r.get("result") == "PASS"}
+    last = {r.get("part"): r.get("result") for r in prow if r.get("run_id") == run}  # append order: last row wins
+    passed = {p for p, res in last.items() if res == "PASS"}
     for p in lr.get("due_parts") or []:
         if p in passed:
             continue
@@ -525,8 +529,10 @@ def _status_run_parts(rows, f, run, code2, blocked):
 def cmd_status(check_refs, run, as_json):
     code, code2, opened, blocked, notes, f = compute_status(check_refs, run)
     names = {0: "COMPLETE", 1: "OPEN", 2: "UNKNOWN", 4: "BLOCKED_WITH_FOLLOWUP"}
+    # exit code unchanged; only the word: completion needs both flags (design D5)
+    label = "OPEN_UNCHECKED" if code == 0 and not (check_refs and run) else names[code]
     if as_json:
-        print(json.dumps({"exit": code, "status": names[code], "reasons": code2,
+        print(json.dumps({"exit": code, "status": label, "reasons": code2,
                           "open": [{"id": i, "kind": k, "sev": f[i]["meta"].get("sev") if i in f else None,
                                     "summary": f[i]["meta"].get("summary") if i in f else None} for i, k in opened],
                           "blocked": blocked, "notes": notes}, ensure_ascii=False))
@@ -538,7 +544,7 @@ def cmd_status(check_refs, run, as_json):
             print("BLOCKED %s (task — not complete until restored)" % b)
         for r in code2 + notes:
             print("NOTE %s" % r)
-        print("STATUS %s exit=%d open=%d" % (names[code], code, len(opened)))
+        print("STATUS %s exit=%d open=%d" % (label, code, len(opened)))
     return code
 
 
@@ -710,7 +716,10 @@ def cmd_do_not_report():
     f = fold(load_ledger()[0])
     for i, e in sorted(f.items()):
         m = e["meta"]
-        if m.get("kind") == "finding" and item_state(e) == "disposed" and e["disps"][-1][1].get("disp") == "dismissed":
+        d = e["disps"][-1][1] if e["disps"] else {}
+        # a dismissal suppresses re-reporting only while the file's sha256 still matches (design L93)
+        if m.get("kind") == "finding" and item_state(e) == "disposed" and d.get("disp") == "dismissed" \
+                and not _dismiss_lapsed(e, d):
             print("%s | %s" % (m.get("path"), m.get("quote")))
     return 0
 
