@@ -282,7 +282,7 @@ bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-a
 ```bash
 RI="python3 $HOME/.claude/skills/memory-health/scripts/routine_items.py"   # 설치 위치에 맞게
 $RI start [--force]          # 실행권(lease) 획득 + run 행(due_parts). 다른 세션이 30분 안에 쓰고 있으면 거부
-# 기한인 부분만(--force 는 여섯 부분 전부):
+# 기한인 부분만(--force 는 일곱 부분 전부):
 #  P-A 고정 범위 감사 — 위 4단계 → $RI ingest-audit --run-dir "$RUN_DIR" --part A
 #  P-B 스킬 업데이트   — bash "$AR" update-check > "$T/upd.txt"; $RI ingest-update --file "$T/upd.txt"
 #  P-C 업데이트 채널   — $RI scan-channels        (내장 plugins 채널 + channels.json 의 log_lines·stamp_age 채널)
@@ -290,6 +290,7 @@ $RI start [--force]          # 실행권(lease) 획득 + run 행(due_parts). 다
 #  P-E 순환 전체 감사  — $RI plan-shards → 조각마다: pre --shard <manifest> → 감사 에이전트 → post → ingest-audit --part E → cover --run-dir … --shard N
 #                         (AUDIT_INCOMPLETE 조각은 plan-shards --split N 으로 반으로 나눠 한 번 다시)
 #  P-F 안 쓰는 확장    — $RI scan-unused          (~/.claude.json 의 skillUsage·pluginUsage 두 키만 읽는다 — 그 파일엔 자격증명도 있다)
+#  P-G 내장 npm 부품    — $RI scan-deps          (channels.json 의 dep_roots·npx_specs — 이 두 값은 로컬 channels.json 에만 둔다. 스킬·플러그인 자체는 P-B·P-C 소관)
 #  한 부분을 아예 못 돌렸으면: $RI part-fail --part X --reason "<사유>"
 $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 ```

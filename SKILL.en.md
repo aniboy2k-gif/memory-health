@@ -282,7 +282,7 @@ before other work (not in `claude -p` — its hooks see `CLAUDE_CODE_ENTRYPOINT=
 ```bash
 RI="python3 $HOME/.claude/skills/memory-health/scripts/routine_items.py"   # adjust to the install location
 $RI start [--force]          # take the routine lease + run row (due_parts); refused while another session used it in the last 30 min
-# only the due parts (--force = all six):
+# only the due parts (--force = all seven):
 #  P-A fixed-scope audit  — the 4 steps above → $RI ingest-audit --run-dir "$RUN_DIR" --part A
 #  P-B skill updates      — bash "$AR" update-check > "$T/upd.txt"; $RI ingest-update --file "$T/upd.txt"
 #  P-C update channels    — $RI scan-channels        (builtin plugins channel + log_lines/stamp_age channels from channels.json)
@@ -290,6 +290,7 @@ $RI start [--force]          # take the routine lease + run row (due_parts); ref
 #  P-E rolling full audit — $RI plan-shards → per shard: pre --shard <manifest> → auditor → post → ingest-audit --part E → cover --run-dir … --shard N
 #                           (an AUDIT_INCOMPLETE shard: plan-shards --split N halves it, retried once)
 #  P-F unused extensions  — $RI scan-unused          (reads only the skillUsage/pluginUsage keys of ~/.claude.json — it also holds credentials)
+#  P-G embedded npm deps  — $RI scan-deps          (dep_roots/npx_specs from channels.json — both live only in the local channels.json; skills/plugins themselves belong to P-B/P-C)
 #  a part that could not run at all: $RI part-fail --part X --reason "<why>"
 $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 ```

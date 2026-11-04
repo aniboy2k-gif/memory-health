@@ -5,6 +5,7 @@ only in the home-real channels.json — never in this file."""
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -490,6 +491,153 @@ def cmd_scan_unused(path):
     return 0
 
 
+# ── P-G: npm packages vendored inside skills/tools ──────────────────────────
+NPM_REGISTRY = "https://registry.npmjs.org/"
+SCOPED_REG = re.compile(r"^@[^:]+:registry$")
+
+
+def dep_timeout():
+    try:
+        return float(os.environ.get("MH_DEP_TIMEOUT_S") or 60)
+    except ValueError:
+        return 60.0
+
+
+def run_npm(args, cwd=None):
+    """-> (rc, stdout) or (None, 'timeout'|'error'); npm resolved at call time (tests stub it via PATH)."""
+    npm = shutil.which("npm")
+    if not npm:
+        return None, "npm-not-found"
+    try:
+        p = subprocess.run([npm] + args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=dep_timeout())
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except OSError:
+        return None, "error"
+    return p.returncode, p.stdout
+
+
+def outdated_verdict(rc, out):
+    """-> (packages dict, None) on success, else (None, reason)."""
+    if rc is None:
+        return None, out if out == "timeout" else "exit-error"
+    if rc not in (0, 1):
+        return None, "exit-%d" % rc
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return None, "non-json"
+    if not isinstance(d, dict):
+        return None, "malformed"
+    if "error" in d:
+        code = d["error"].get("code") if isinstance(d["error"], dict) else None
+        return None, "error-envelope:%s" % (code or "unknown")
+    for v in d.values():
+        if not (isinstance(v, dict) and isinstance(v.get("current"), str) and isinstance(v.get("latest"), str)
+                and isinstance(v.get("wanted", ""), str)):
+            return None, "malformed"
+    return d, None
+
+
+def npx_cached(name):
+    """-> version of the newest-mtime cached package.json under ~/.npm/_npx, or None."""
+    best = None
+    base = os.path.join(ri.home(), ".npm", "_npx")
+    for h in os.listdir(base) if os.path.isdir(base) else []:
+        pj = os.path.join(base, h, "node_modules", name, "package.json")
+        try:
+            m = os.stat(pj).st_mtime
+        except OSError:
+            continue
+        if best is None or m > best[0]:
+            best = (m, pj)
+    try:
+        v = ri.load_json(best[1]).get("version") if best else None
+    except (OSError, ValueError, AttributeError):
+        v = None
+    return v if isinstance(v, str) and v else None
+
+
+def _scan_root(b, root, fail):
+    if not os.path.isdir(root):
+        return fail(root, "root-missing")
+    nm = os.path.join(root, "node_modules")
+    if not (os.path.isdir(nm) or os.path.islink(nm)):
+        print("SKIP %s (no node_modules)" % os.path.basename(root.rstrip("/")))
+        return
+    rc, out = run_npm(["config", "list", "--json"], cwd=root)
+    try:
+        conf = json.loads(out) if rc == 0 else None
+    except ValueError:
+        conf = None
+    if not isinstance(conf, dict):
+        return fail(root, "npm-config-failed")
+    if any(SCOPED_REG.match(k) and v != NPM_REGISTRY for k, v in conf.items()):
+        return fail(root, "scoped-registry-override")
+    pkgs, why = outdated_verdict(*run_npm(["outdated", "--json", "--registry", NPM_REGISTRY], cwd=root))
+    if why:
+        return fail(root, why)
+    for name in sorted(pkgs):
+        v = pkgs[name]
+        b.item(ri.make_item("G", "dep-outdated", "%s\n%s\n%s" % (root, name, v["latest"]), "low",
+                            "%s %s (wanted %s, latest %s) in %s" % (name, v["current"], v.get("wanted", "-"), v["latest"],
+                                                                   os.path.basename(root.rstrip("/"))),
+                            package=name, current=v["current"], wanted=v.get("wanted"), latest=v["latest"], root=root))
+
+
+def _scan_npx(b, name, fail):
+    cached = npx_cached(name)
+    rc, out = run_npm(["view", name, "version"])
+    lines = [x.strip() for x in (out or "").split("\n") if x.strip()] if rc == 0 else []
+    if not lines:
+        return fail("npx:%s" % name, "npm-view-failed")
+    latest = lines[-1]
+    if cached != latest:
+        b.item(ri.make_item("G", "dep-outdated", "npx\n%s\n%s" % (name, latest), "low",
+                            "npx %s %s (%s), latest %s" % (name, cached or "unknown", "last-cached" if cached else "unknown",
+                                                         latest),
+                            package=name, current=cached or "unknown", latest=latest, root="npx",
+                            cache_label="last-cached" if cached else "unknown"))
+
+
+def cmd_scan_deps():
+    with ri.Mutate():
+        rows = ri.load_ledger()[0]
+        run_id = ri.current_run(rows)
+        b = Batch(rows)
+        failures = []
+
+        def fail(where, reason):
+            failures.append("%s: %s" % (os.path.basename(where.rstrip("/")) or where, reason))
+            b.item(ri.make_item("G", "dep-scan-failed", "%s\n%s" % (where, reason), "medium",
+                                "dependency scan failed (%s) for %s" % (reason, os.path.basename(where.rstrip("/")) or where),
+                                reason=reason, root=where))
+
+        if not shutil.which("npm"):
+            fail("npm", "npm-not-found")
+        else:
+            try:
+                cfg = ri.load_config() or {}
+            except (ValueError, OSError):
+                cfg = {}
+            roots = cfg.get("dep_roots") or []
+            if not roots:
+                failures.append("dep_roots unset")
+                b.item(ri.make_item("G", "dep-roots-unset", "dep_roots", "medium",
+                                    "dep_roots missing or empty in the local channels.json — part G scanned nothing"))
+            else:
+                for root in roots:
+                    _scan_root(b, os.path.expanduser(str(root)), fail)
+                for name in cfg.get("npx_specs") or []:
+                    _scan_npx(b, str(name), fail)
+        b.commit([])
+        ok = not failures
+        ri.record_part("G", run_id, ok, "" if ok else "; ".join(failures)[:300])
+    print("INGESTED items=%d part_G=%s" % (len(b.items), "PASS" if ok else "FAILED"))
+    return 0 if ok else 1
+
+
 def dispatch(cmd, rest):
     import routine_audit as ra  # imported here: routine_audit imports this module
     o = ri.opts
@@ -501,6 +649,9 @@ def dispatch(cmd, rest):
         return cmd_ingest_doctor(o(rest, {"file": True})[0].get("file"))
     if cmd == "scan-unused":
         return cmd_scan_unused(o(rest, {"file": True})[0].get("file"))
+    if cmd == "scan-deps":
+        o(rest, {})
+        return cmd_scan_deps()
     if cmd == "ingest-audit":
         a = o(rest, {"run-dir": True, "part": True})[0]
         return ra.cmd_ingest_audit(a.get("run-dir", ""), a.get("part", ""))
