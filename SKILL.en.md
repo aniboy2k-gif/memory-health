@@ -170,7 +170,7 @@ bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
 > - The procedure file `~/.claude/skills/claude-api/shared/prompt-audit.md` and the auditor definition
 >   `~/.claude/agents/memory-health-prompt-auditor-ro.md` must exist (otherwise `pre` returns ENGINE_UNAVAILABLE / AUDITOR_MISCONFIGURED).
 > - The bundled claude-api skill must not be turned off (`skillOverrides` / `disableBundledSkills`).
-> - Claude Code v2.1.283+ (as of 2026-10-29, CSR #2450) is needed only for the user-typed `/doctor prompt-audit` form.
+> - Claude Code v2.1.283+ (per the official docs, checked in CSR #2450 on 2026-10-28) is needed only for the user-typed `/doctor prompt-audit` form.
 > - Run it in a session started without `--add-dir` / `/add-dir` / `--agents` (not visible on disk, so `pre` cannot see them — RF).
 
 After the default `/memory-health` run (dry-run), the two parts below run. **Each part runs only when its own marker is
@@ -319,7 +319,7 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 
 | disposition | needs | not accepted when |
 |---|---|---|
-| `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote · `part_failed` only with the `ts` of a PASS row of that part after the item's last FAILED row (any run; a PASS before the failure is refused) |
+| `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote (exception: the ref is a commit sha, that commit deleted the line the audit recorded, and the quote remains only on other lines — e.g. the fixing commit's own marker line — accepted) · `part_failed` only with the `ts` of a PASS row of that part after the item's last FAILED row (any run; a PASS before the failure is refused) |
 | `task` | `--ref "CSR #N"` — that post's body or a comment must contain the item id verbatim | board unreachable |
 | `dismissed` | `--reason` ≥ 20 chars | allowed kinds only: audit finding (not high), update-available, unused-extension, plugin-version-changed, unclassified. An audit-finding dismissal is bound to the file's sha256 and reopens when the file changes |
 | `deferred` | all of `--goal --deadline (YYYY-MM-DD, within 90 days) --method --revert` | once per item · not for sev=high |
@@ -349,7 +349,7 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 | `unclassified` | extend the channel's event/ignore regexes and `verified` (evidence = the regex), or `dismissed` |
 | `unknown` (a source could not be read) | restore the source or fix the channel registry; the item closes only when the next scan reads the source and the tool writes `fixed recheck:<run>`; if that cannot happen this session, `task` (status stays 4 until that recheck passes). A session cannot close it with `fixed`, `verified` or `dismissed` |
 | claude-forge update available | run `/forge-update` (not `update.py`) and verify → `fixed` (commit or PR) or `verified` (the check command and its output line); `dismissed` with a reason if it is skipped on purpose; else `task` |
-| `orphaned_task` (the referenced CSR is closed, the item is undecided) | dispose again under the rules of the item's original kind — an id comment on the closed CSR does not reopen anything. ① Fixed → `fixed`: an audit finding with a commit, PR or `CSR #N c#M` (the quote must be gone from the file); a `part_failed` with `fixed --ref <ts of a PASS row of that part after the failure>` (any run). ② Not yet → a new `task` to an open CSR (list the id there first); a medium/low audit finding follows the medium/low row above. ③ Owner's call → list the id in this month's follow-up CSR, tag that post `waiting`, then `task`. `unknown` and `unobserved_plugin` have no ①: fix the source and the next scan closes them |
+| `orphaned_task` (the referenced CSR is closed, the item is undecided) | dispose again under the rules of the item's original kind — an id comment on the closed CSR does not reopen anything. ① Fixed → `fixed`: an audit finding with a commit, PR or `CSR #N c#M` (the quote must be gone from the file, except in the exception of the `fixed` row above); a `part_failed` with `fixed --ref <ts of a PASS row of that part after the failure>` (any run). ② Not yet → a new `task` to an open CSR (list the id there first); a medium/low audit finding follows the medium/low row above. ③ Owner's call → list the id in this month's follow-up CSR, tag that post `waiting`, then `task`. `unknown` and `unobserved_plugin` have no ①: fix the source and the next scan closes them |
 | `unlinked_task` (the referenced CSR lacks the id) | add a comment listing the id to that CSR and dispose again, or a new `task` |
 
 - **At most one follow-up CSR per month** ("월간 루틴 YYYY-MM 후속", created only by the lease holder after searching for the same title) — never one CSR per item.
