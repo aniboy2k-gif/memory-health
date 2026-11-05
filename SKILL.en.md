@@ -170,7 +170,7 @@ bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
 > - The procedure file `~/.claude/skills/claude-api/shared/prompt-audit.md` and the auditor definition
 >   `~/.claude/agents/memory-health-prompt-auditor-ro.md` must exist (otherwise `pre` returns ENGINE_UNAVAILABLE / AUDITOR_MISCONFIGURED).
 > - The bundled claude-api skill must not be turned off (`skillOverrides` / `disableBundledSkills`).
-> - Claude Code v2.1.283+ is needed only for the user-typed `/doctor prompt-audit` form.
+> - Claude Code v2.1.283+ (as of 2026-10-29, CSR #2450) is needed only for the user-typed `/doctor prompt-audit` form.
 > - Run it in a session started without `--add-dir` / `/add-dir` / `--agents` (not visible on disk, so `pre` cannot see them — RF).
 
 After the default `/memory-health` run (dry-run), the two parts below run. **Each part runs only when its own marker is
@@ -319,7 +319,7 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 
 | disposition | needs | not accepted when |
 |---|---|---|
-| `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote · `part_failed` only with the `ts` of a later PASS row of the same run |
+| `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote · `part_failed` only with the `ts` of a PASS row of that part after the item's last FAILED row (any run; a PASS before the failure is refused) |
 | `task` | `--ref "CSR #N"` — that post's body or a comment must contain the item id verbatim | board unreachable |
 | `dismissed` | `--reason` ≥ 20 chars | allowed kinds only: audit finding (not high), update-available, unused-extension, plugin-version-changed, unclassified. An audit-finding dismissal is bound to the file's sha256 and reopens when the file changes |
 | `deferred` | all of `--goal --deadline (YYYY-MM-DD, within 90 days) --method --revert` | once per item · not for sev=high |
@@ -328,7 +328,8 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 | item kind | what the session does |
 |---|---|
 | audit finding high | `fixed` or `task` in the same session |
-| audit finding medium/low | `fixed` in this batch, `dismissed` with a reason, or `deferred` |
+| audit finding medium/low | `fixed` in this batch, `dismissed` with a reason, or `deferred` (all four: goal, deadline, method, revert condition). `task` only when a four-element `deferred` is impossible (already deferred once · no deadline within 90 days or no revert condition can be set) and only after the finding is written into the table of this month's follow-up CSR. A finding that overlaps another open CSR's table follows the next row. The tool (`check_task_ref`) already checks that the id appears in that CSR's body or a comment; "only when a four-element `deferred` is impossible" is a session rule the tool does not check |
+| a re-found finding that is already in an open CSR's table | do not process it here: first add one comment to that CSR listing the re-found ids, then `task --ref "CSR #N"` to that CSR. Not `dismissed` — a dismissal joins the "do not re-report" list and would not come back after that CSR closes; a `task` folds back to `orphaned_task` under `--check-refs` once that CSR closes |
 | fix in claude-forge / memory-health / skill-advisor | one worktree and one PR per repo; merge approval asked once at the end of the run |
 | fix in personal local files | direct edit after a backup |
 | owner-only (money, permission, credentials, irreversible, taste) · doctor permission-rule warning | `task` into this month's follow-up CSR, tagged `waiting` |
@@ -336,11 +337,20 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 | plugin version changed | check `claude plugin list --json` shows it enabled without errors → `verified` |
 | auto-update marketplace not refreshed for > 14 days | `claude plugin marketplace update <name>`, re-check, record |
 | `unobserved_plugin` (auto-update off + no upstream observation in 45 days) | add an observation rule to an upstream-checking channel or turn auto-update on — the next scan closes it |
-| `runner-stale` | diagnose with `launchctl list`, the log and rc; fix if no sudo is needed, else owner `task` |
+| ponytail HOLD — structural change | read the recorded diff; approve via `.ponytail-approve` only if it meets the owner's HOLD approval criteria (da #1357), else keep it held; either way `verified` with the criteria check as evidence |
+| ponytail HOLD — re-deletion impossible | owner's call (taste — the owner's deletions): list the id in this month's follow-up CSR, tag that post `waiting`, then `task` |
+| ponytail error / load failure / rollback | run `ponytail-update.sh --rollback` and record the result — `fixed` with a commit, PR or `CSR #N c#M` as ref; if it cannot be rolled back, `task`. With sev=high only `fixed` or `task` is accepted |
+| `runner-stale` (the stamp is older than the channel's `max_age_h`) | diagnose with `launchctl list`, the log and rc. If it can be fixed without sudo, fix it and record — `fixed` (ref = commit, PR or a `CSR #N c#M` holding the diagnosis and the fix) or `verified` (the command and output line showing it runs again). If sudo is needed it is the owner's step: write the id, the diagnosis and the command the owner must run into this month's follow-up CSR, tag that post `waiting`, then `task --ref "CSR #N"` |
+| RTK update available | read the release notes; `brew upgrade rtk` (no sudo); check the version and record — `verified` with the version command and its output line |
+| claude doctor installation issue | fix it if no sudo is needed → `fixed` (ref = commit, PR or a `CSR #N c#M` recording the fix); else owner's call — list the id and the command the owner must run in this month's follow-up CSR, tag that post `waiting`, then `task` |
+| CLI auto-update failure | diagnose and record — `verified` with the diagnosis command and its output line |
 | `part_failed` | re-run the part in the same run → PASS → `fixed` (that row's ts). Otherwise `task` — the run ends with exit 4 (not complete) and the part is due again next session |
 | `cursor_reset` | read the log from the start (and the replaced file if any), ingest missed events, `verified` |
 | `unclassified` | extend the channel's event/ignore regexes and `verified` (evidence = the regex), or `dismissed` |
-| `orphaned_task`, `unlinked_task` | dispose again — a new `task`, or add an id comment to that CSR |
+| `unknown` (a source could not be read) | restore the source or fix the channel registry; the item closes only when the next scan reads the source and the tool writes `fixed recheck:<run>`; if that cannot happen this session, `task` (status stays 4 until that recheck passes). A session cannot close it with `fixed`, `verified` or `dismissed` |
+| claude-forge update available | run `/forge-update` (not `update.py`) and verify → `fixed` (commit or PR) or `verified` (the check command and its output line); `dismissed` with a reason if it is skipped on purpose; else `task` |
+| `orphaned_task` (the referenced CSR is closed, the item is undecided) | dispose again under the rules of the item's original kind — an id comment on the closed CSR does not reopen anything. ① Fixed → `fixed`: an audit finding with a commit, PR or `CSR #N c#M` (the quote must be gone from the file); a `part_failed` with `fixed --ref <ts of a PASS row of that part after the failure>` (any run). ② Not yet → a new `task` to an open CSR (list the id there first); a medium/low audit finding follows the medium/low row above. ③ Owner's call → list the id in this month's follow-up CSR, tag that post `waiting`, then `task`. `unknown` and `unobserved_plugin` have no ①: fix the source and the next scan closes them |
+| `unlinked_task` (the referenced CSR lacks the id) | add a comment listing the id to that CSR and dispose again, or a new `task` |
 
 - **At most one follow-up CSR per month** ("월간 루틴 YYYY-MM 후속", created only by the lease holder after searching for the same title) — never one CSR per item.
 - **Completion**: done **only when** `status --check-refs --run <latest run_id>` exits **0** — 1 open items · 2 ledger unknown / overdue deferral / refs unchecked / a due part without PASS · 4 blocked, handed to a follow-up (not complete). The report ends with that STATUS line.
