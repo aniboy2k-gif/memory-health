@@ -172,7 +172,7 @@ bash ~/.claude/skills/memory-health/scripts/check-skill-update.sh
 > - 절차 파일 `~/.claude/skills/claude-api/shared/prompt-audit.md` 와 감사 에이전트 정의
 >   `~/.claude/agents/memory-health-prompt-auditor-ro.md` 가 있어야 한다(없으면 `pre` 가 ENGINE_UNAVAILABLE·AUDITOR_MISCONFIGURED).
 > - 내장 claude-api 스킬을 끄지 않아야 한다(`skillOverrides`·`disableBundledSkills`).
-> - Claude Code v2.1.283+ 는 사용자가 직접 치는 `/doctor prompt-audit` 형식에만 필요하다.
+> - Claude Code v2.1.283+(공식 문서 기준, CSR #2450 에서 2026-10-28 확인) 는 사용자가 직접 치는 `/doctor prompt-audit` 형식에만 필요하다.
 > - 세션을 `--add-dir`·`/add-dir`·`--agents` 없이 시작한 상태에서 실행한다(디스크에 보이지 않아 `pre` 가 못 본다 — RF).
 
 `/memory-health` 기본 실행(dry-run) 종료 후 아래 두 부분을 수행한다. **각 부분은 자기 기록이 기한 경과일 때만**
@@ -318,7 +318,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 
 | 처분 | 필요한 것 | 받지 않는 경우 |
 |---|---|---|
-| `fixed` | `--ref` = 커밋 sha · PR URL · `CSR #N c#M`(그 글의 댓글로 확인) | 감사 지적은 그 파일에 인용문이 남아 있으면 거부 · `part_failed` 는 같은 run 의 뒤 PASS 행 `ts` 만 |
+| `fixed` | `--ref` = 커밋 sha · PR URL · `CSR #N c#M`(그 글의 댓글로 확인) | 감사 지적은 그 파일에 인용문이 남아 있으면 거부(예외: `--ref` 가 커밋 sha 이고, 그 커밋이 감사가 기록한 그 줄을 지웠으며 인용문이 다른 줄에만 남은 경우 — 이를테면 고친 커밋이 자기 표지 줄에 같은 문자열을 넣은 경우 — 수락) · `part_failed` 는 그 항목의 마지막 FAILED 행 뒤에 온 같은 부분 PASS 행의 `ts` 만(어느 run 이든, 실패 전 PASS 는 거부) |
 | `task` | `--ref "CSR #N"` — 그 글 본문/댓글에 항목 id 가 그대로 있어야 함 | 게시판 접속 불가면 거부 |
 | `dismissed` | `--reason` 20자 이상 | 허용 종류만: 감사 지적(high 제외)·update-available·unused-extension·plugin-version-changed·unclassified. 감사 지적의 기각은 그 파일의 sha256 에 묶여, 파일이 바뀌면 다시 열린다 |
 | `deferred` | `--goal --deadline(YYYY-MM-DD, 90일 안) --method --revert` 넷 다 | 항목당 한 번만 · sev=high 불가 |
@@ -327,7 +327,8 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 | 항목 종류 | 세션이 할 일 |
 |---|---|
 | 감사 지적 high | 같은 세션에 `fixed` 또는 `task` |
-| 감사 지적 medium/low | 이번 묶음에서 `fixed`, 사유 있는 `dismissed`, 또는 `deferred` |
+| 감사 지적 medium/low | 이번 묶음에서 `fixed`, 사유 있는 `dismissed`, 또는 `deferred`(목표·기한·방법·되돌릴 조건 넷 다). `task` 는 넷을 갖춘 `deferred` 가 불가능할 때만 쓴다(이미 한 번 미뤘음 · 90일 안의 기한이나 되돌릴 조건을 세울 수 없음). 그리고 그 지적을 이번 달 후속 CSR 의 표에 적은 뒤에만 쓴다. 다른 열린 CSR 의 표와 겹치는 지적은 다음 행을 따른다. 도구(`check_task_ref`)는 id 가 그 CSR 글(본문이나 댓글)에 있는지를 이미 검사한다. 「넷을 갖춘 `deferred` 가 불가능할 때만」은 도구가 검사하지 않는 세션 규칙이다 |
+| 다시 찾은 지적이 이미 열린 CSR 의 표에 있음 | 그 지적은 여기서 처리하지 않는다. 먼저 그 CSR 에 다시 찾은 id 들을 나열한 댓글 1개를 달고, 그 CSR 로 `task --ref "CSR #N"`. `dismissed` 는 쓰지 않는다 — 기각은 「다시 보고 안 함」 목록에 들어가 그 CSR 이 닫힌 뒤에도 돌아오지 않는다. `task` 는 그 CSR 이 닫히면 `--check-refs` 가 `orphaned_task` 로 다시 연다 |
 | claude-forge·memory-health·skill-advisor 수정 | 저장소마다 작업 트리 1개·PR 1개, 병합 승인은 실행 끝에 한 번 |
 | 개인 로컬 파일 수정 | 백업 후 직접 수정 |
 | 소유자만 정할 것(돈·권한·자격증명·비가역·취향) · doctor 권한 규칙 경고 | 이번 달 후속 CSR 에 `task`, 그 글에 `waiting` 태그 |
@@ -335,11 +336,20 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 | 플러그인 판 바뀜 | `claude plugin list --json` 에서 오류 없이 켜져 있는지 보고 `verified` |
 | 자동 갱신 마켓 14일 넘게 안 갱신 | `claude plugin marketplace update <이름>` 후 다시 확인·기록 |
 | `unobserved_plugin`(자동 갱신 꺼짐 + 45일 안 상류 관찰 없음) | 상류를 확인하는 채널의 관찰 규칙에 넣거나 자동 갱신을 켠다 — 다음 스캔이 닫는다 |
-| 실행기 멈춤(`runner-stale`) | `launchctl list`·로그·rc 로 진단, sudo 없이 고칠 수 있으면 고치고 아니면 소유자 `task` |
+| ponytail 보류(HOLD) — 구조 변경 | 기록된 diff 를 읽고, 소유자의 HOLD 승인 기준(da #1357)을 충족할 때만 `.ponytail-approve` 로 승인한다. 충족하지 않으면 보류를 유지한다. 어느 쪽이든 기준 대조 결과를 근거로 `verified` |
+| ponytail 보류(HOLD) — 지운 것을 다시 지울 수 없음 | 소유자 몫(취향 — 소유자가 지운 것): 이번 달 후속 CSR 에 id 를 적고 그 글에 `waiting` 태그를 단 뒤 `task` |
+| ponytail 오류·불러오기 실패·롤백 | `ponytail-update.sh --rollback` 을 돌리고 결과를 기록한다. 기록은 커밋·PR·`CSR #N c#M` 을 ref 로 `fixed`. 되돌리지 못하면 `task`. sev=high 이면 `fixed`·`task` 만 받는다 |
+| 실행기 멈춤(`runner-stale`, 표식이 채널의 `max_age_h` 보다 오래됨) | `launchctl list`·로그·rc 로 진단한다. sudo 없이 고칠 수 있으면 고치고 기록 — `fixed`(ref = 커밋·PR·진단과 조치를 적은 `CSR #N c#M`) 또는 `verified`(다시 도는 것을 보이는 명령과 출력 줄). sudo 가 필요하면 소유자가 할 일이다. 이번 달 후속 CSR 에 id·진단·소유자가 칠 명령을 적고 그 글에 `waiting` 태그를 단 뒤 `task --ref "CSR #N"` |
+| RTK 업데이트 가능 | 릴리스 노트를 읽고 `brew upgrade rtk`(sudo 불필요), 판을 확인하고 기록 — 판 확인 명령과 출력 줄을 근거로 `verified` |
+| claude doctor 설치 문제 | sudo 없이 고칠 수 있으면 고치고 `fixed`(ref = 커밋·PR·조치를 적은 `CSR #N c#M`). 아니면 소유자 몫 — 이번 달 후속 CSR 에 id 와 소유자가 칠 명령을 적고 그 글에 `waiting` 태그를 단 뒤 `task` |
+| CLI 자동 업데이트 실패 | 진단하고 기록 — 진단 명령과 출력 줄을 근거로 `verified` |
 | `part_failed` | 같은 run 에서 그 부분을 다시 돌려 PASS → `fixed`(그 행 ts). 안 되면 `task` — 실행은 종료 코드 4(완료 아님)로 끝나고 다음 세션에 다시 기한 |
 | `cursor_reset` | 로그를 처음부터(교체됐으면 옛 파일도) 읽어 빠진 사건을 받아들이고 `verified` |
 | `unclassified` | 채널의 사건/무시 정규식을 보강하고 `verified`(근거=정규식), 또는 `dismissed` |
-| `orphaned_task`·`unlinked_task` | 다시 처분 — 새 `task` 또는 그 CSR 에 id 댓글 추가 |
+| `unknown`(원천을 못 읽음) | 원천을 되살리거나 채널 목록을 고친다. 다음 스캔이 원천을 제대로 읽으면 도구가 `fixed recheck:<run>` 을 써서 닫는다. 이번 세션에 못 하면 `task`(그 재확인이 통과할 때까지 status 4). 세션은 `fixed`·`verified`·`dismissed` 로 닫지 못한다 |
+| claude-forge 업데이트 가능 | `update.py` 가 아니라 `/forge-update` 를 실행하고 확인 → `fixed`(커밋·PR) 또는 `verified`(확인 명령과 출력 줄). 일부러 안 올리면 사유 있는 `dismissed`. 이번에 못 하면 `task` |
+| `orphaned_task`(참조한 CSR 이 닫혔는데 항목은 미결) | 원래 항목 종류의 규칙대로 다시 처분한다. 닫힌 CSR 에 id 댓글을 달아도 다시 열리지 않는다. ① 고쳐졌으면 `fixed`: 감사 지적이면 커밋·PR·`CSR #N c#M`(인용문이 파일에서 사라져야 한다. 단 위 `fixed` 칸의 예외에 해당하면 인용문이 남아도 수락한다), `part_failed` 면 `fixed --ref <실패 뒤에 온 같은 부분 PASS 행의 ts>`(어느 run 이든) ② 아직이면 열린 CSR 로 새 `task`(그 글에 id 를 먼저 적는다). 감사 지적 medium/low 는 위 medium/low 행의 조건을 따른다 ③ 소유자 몫이면 이번 달 후속 CSR 에 id 를 적고 그 글에 `waiting` 태그를 단 뒤 `task`. `unknown`·`unobserved_plugin` 에는 ①이 없다 — 원천을 고치면 다음 스캔이 닫는다 |
+| `unlinked_task`(참조한 CSR 에 id 가 없음) | 그 CSR 에 id 를 적은 댓글을 달고 다시 처분하거나 새 `task` |
 
 - **후속 CSR 은 달마다 최대 1개**(「월간 루틴 YYYY-MM 후속」, 실행권을 쥔 세션만 만들고 먼저 같은 제목을 찾아 재사용) — 항목마다 CSR 을 만들지 않는다.
 - **완료 판정**: `status --check-refs --run <최신 run_id>` 종료 코드가 **0 일 때만** 끝 — 1 열린 항목 · 2 원장 불명/기한 지난 미룸/참조 미확인/기한 부분 PASS 없음 · 4 막힘을 후속 작업에 넘김(완료 아님). 보고는 그 STATUS 줄로 끝낸다.
