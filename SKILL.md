@@ -348,7 +348,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 | `unclassified` | 채널의 사건/무시 정규식을 보강하고 `verified`(근거=정규식), 또는 `dismissed` |
 | `unknown`(원천을 못 읽음) | 원천을 되살리거나 채널 목록을 고친다. 다음 스캔이 원천을 제대로 읽으면 도구가 `fixed recheck:<run>` 을 써서 닫는다. 이번 세션에 못 하면 `task`(그 재확인이 통과할 때까지 status 4). 세션은 `fixed`·`verified`·`dismissed` 로 닫지 못한다 |
 | claude-forge 업데이트 가능 | `update.py` 가 아니라 `/forge-update` 를 실행하고 확인 → `fixed`(커밋·PR) 또는 `verified`(확인 명령과 출력 줄). 일부러 안 올리면 사유 있는 `dismissed`. 이번에 못 하면 `task` |
-| `orphaned_task`(참조한 CSR 이 닫혔는데 항목은 미결) | 원래 항목 종류의 규칙대로 다시 처분한다. 닫힌 CSR 에 id 댓글을 달아도 다시 열리지 않는다. ① 고쳐졌으면 `fixed`: 감사 지적이면 커밋·PR·`CSR #N c#M`(인용문이 파일에서 사라져야 함 — 위 `fixed` 칸의 예외는 제외), `part_failed` 면 `fixed --ref <실패 뒤에 온 같은 부분 PASS 행의 ts>`(어느 run 이든) ② 아직이면 열린 CSR 로 새 `task`(그 글에 id 를 먼저 적는다). 감사 지적 medium/low 는 위 medium/low 행의 조건을 따른다 ③ 소유자 몫이면 이번 달 후속 CSR 에 id 를 적고 그 글에 `waiting` 태그를 단 뒤 `task`. `unknown`·`unobserved_plugin` 에는 ①이 없다 — 원천을 고치면 다음 스캔이 닫는다 |
+| `orphaned_task`(참조한 CSR 이 닫혔는데 항목은 미결) | 원래 항목 종류의 규칙대로 다시 처분한다. 닫힌 CSR 에 id 댓글을 달아도 다시 열리지 않는다. ① 고쳐졌으면 `fixed`: 감사 지적이면 커밋·PR·`CSR #N c#M`(인용문이 파일에서 사라져야 한다. 단 위 `fixed` 칸의 예외에 해당하면 인용문이 남아도 수락한다), `part_failed` 면 `fixed --ref <실패 뒤에 온 같은 부분 PASS 행의 ts>`(어느 run 이든) ② 아직이면 열린 CSR 로 새 `task`(그 글에 id 를 먼저 적는다). 감사 지적 medium/low 는 위 medium/low 행의 조건을 따른다 ③ 소유자 몫이면 이번 달 후속 CSR 에 id 를 적고 그 글에 `waiting` 태그를 단 뒤 `task`. `unknown`·`unobserved_plugin` 에는 ①이 없다 — 원천을 고치면 다음 스캔이 닫는다 |
 | `unlinked_task`(참조한 CSR 에 id 가 없음) | 그 CSR 에 id 를 적은 댓글을 달고 다시 처분하거나 새 `task` |
 
 - **후속 CSR 은 달마다 최대 1개**(「월간 루틴 YYYY-MM 후속」, 실행권을 쥔 세션만 만들고 먼저 같은 제목을 찾아 재사용) — 항목마다 CSR 을 만들지 않는다.
