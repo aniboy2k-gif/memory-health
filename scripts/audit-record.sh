@@ -235,6 +235,14 @@ cmd_pre() {
   for req in "$gclaude" "$sk" "$ske"; do
     [ -f "$req" ] || pre_fail SCOPE_UNRESOLVED "scope file missing: $req"
   done
+  # CSR #2503 C1: procedures moved from SKILL*.md to reference/*.md — explicit sorted list, no glob
+  # (a zero-match glob would silently drop moved text from the audit scope); each one is required
+  local rd="$MH_HOME/.claude/skills/memory-health/reference" refs="" r
+  for r in optimizer.en.md optimizer.md rules-checker.en.md rules-checker.md \
+           scanner.en.md scanner.md with-md-catalog.en.md with-md-catalog.md; do
+    [ -f "$rd/$r" ] || pre_fail SCOPE_UNRESOLVED "scope file missing: $rd/$r"
+    refs="$refs$rd/$r$NL"
+  done
 
   # manifest (absolute paths only, fixed order)
   list="$gclaude
@@ -246,7 +254,7 @@ cmd_pre() {
   list="$list$mem
 $sk
 $ske
-"
+$refs"
   if [ -f "$cwd/CLAUDE.md" ]; then
     local dup=0 m
     local IFS="$NL"

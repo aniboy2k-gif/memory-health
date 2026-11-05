@@ -40,6 +40,10 @@ printf 'x\ny\nz' > "$H/.claude/rules/d.md"                       # no final newl
 printf '# MEMORY\n' > "$MEM/MEMORY.md"
 printf 'skill\n' > "$H/.claude/skills/memory-health/SKILL.md"
 printf 'skill en\n' > "$H/.claude/skills/memory-health/SKILL.en.md"
+# CSR #2503 C1: procedures moved out of SKILL*.md into reference/*.md — they stay in the audit scope
+REFS="optimizer.en.md optimizer.md rules-checker.en.md rules-checker.md scanner.en.md scanner.md with-md-catalog.en.md with-md-catalog.md"
+mkdir -p "$H/.claude/skills/memory-health/reference"
+for r in $REFS; do printf 'ref %s\n' "$r" > "$H/.claude/skills/memory-health/reference/$r"; done
 printf 'procedure\n' > "$H/.claude/skills/claude-api/shared/prompt-audit.md"
 printf 'project\n' > "$PROJ/CLAUDE.md"
 
@@ -86,13 +90,21 @@ $H/.claude/rules/d.md
 $MEM/MEMORY.md
 $H/.claude/skills/memory-health/SKILL.md
 $H/.claude/skills/memory-health/SKILL.en.md
+$H/.claude/skills/memory-health/reference/optimizer.en.md
+$H/.claude/skills/memory-health/reference/optimizer.md
+$H/.claude/skills/memory-health/reference/rules-checker.en.md
+$H/.claude/skills/memory-health/reference/rules-checker.md
+$H/.claude/skills/memory-health/reference/scanner.en.md
+$H/.claude/skills/memory-health/reference/scanner.md
+$H/.claude/skills/memory-health/reference/with-md-catalog.en.md
+$H/.claude/skills/memory-health/reference/with-md-catalog.md
 $PROJ/CLAUDE.md"
 [ "$(cat "$RUN/manifest.txt")" = "$want" ] && ok "manifest = absolute paths in the fixed order" || no "manifest wrong: $(cat "$RUN/manifest.txt")"
 grep -q "$(printf '\t')" "$RUN/manifest.txt" && no "manifest leaks tsv fields" || ok "manifest has paths only"
 # #46 (design :166 A5-C2): pre stores no line count anywhere — private.tsv = path + sha256 only
 bad_tsv="$(awk -F'\t' 'NF!=2' "$RUN/private.tsv")"
 n_tsv="$(awk 'END{print NR}' "$RUN/private.tsv")"
-[ -z "$bad_tsv" ] && [ "$n_tsv" = "9" ] && ok "private.tsv = path<TAB>sha256 only (no line-count column)" || no "private.tsv has other columns: [$bad_tsv] rows=$n_tsv"
+[ -z "$bad_tsv" ] && [ "$n_tsv" = "17" ] && ok "private.tsv = path<TAB>sha256 only (no line-count column)" || no "private.tsv has other columns: [$bad_tsv] rows=$n_tsv"
 [ -s "$RUN/definition.sha256" ] && ok "definition.sha256 written" || no "definition.sha256 missing"
 # #5b (design :60): the procedure file's sha256 is recorded at pre too
 PROC="$H/.claude/skills/claude-api/shared/prompt-audit.md"
@@ -157,6 +169,14 @@ OUT="$(env -u CLAUDE_MEMORY_DIR bash "$SCRIPT" pre --cwd "$PROJ" 2>&1)"
 [ "$(state_of "$OUT")" = "SCOPE_UNRESOLVED" ] && ok "CLAUDE_MEMORY_DIR unset -> SCOPE_UNRESOLVED" || no "expected SCOPE_UNRESOLVED [$OUT]"
 OUT="$(CLAUDE_MEMORY_DIR="$T/nomem" bash "$SCRIPT" pre --cwd "$PROJ" 2>&1)"
 [ "$(state_of "$OUT")" = "SCOPE_UNRESOLVED" ] && ok "MEMORY.md missing -> SCOPE_UNRESOLVED" || no "MEMORY.md missing [$OUT]"
+# CSR #2503: each reference file is required like the SKILL files (explicit list, no glob)
+for r in optimizer.md with-md-catalog.en.md; do
+  mv "$H/.claude/skills/memory-health/reference/$r" "$T/ref.bak"
+  run_pre
+  [ "$(state_of "$OUT")" = "SCOPE_UNRESOLVED" ] && [ "$RC" -ne 0 ] && printf '%s\n' "$OUT" | grep -qF "reference/$r" \
+    && ok "reference/$r missing -> SCOPE_UNRESOLVED" || no "reference/$r missing [$OUT] rc=$RC"
+  mv "$T/ref.bak" "$H/.claude/skills/memory-health/reference/$r"
+done
 n_pre_fail="$(grep -c '"step":"pre"' "$MH_AUDIT_JSONL" 2>/dev/null)"
 [ "${n_pre_fail:-0}" -ge 8 ] && ok "every pre failure appended a jsonl record ($n_pre_fail)" || no "pre failure records: ${n_pre_fail:-0}"
 [ ! -f "$ST/claude-md-audit-last" ] && ok "no marker after any pre failure" || no "marker written by a pre failure"
@@ -173,7 +193,7 @@ echo "$OUT" | grep -q '"dry_run":true' && ok "--dry-run record printed with dry_
 OUT="$(bash "$SCRIPT" post "$R" "$T/report.md" 2>&1)"; RC=$?
 [ "$(state_of "$OUT")" = "REPORTED" ] && [ "$RC" -eq 0 ] && ok "correct COVERED lines -> REPORTED" || no "expected REPORTED [$OUT]"
 [ "$(cat "$ST/claude-md-audit-last" 2>/dev/null)" = "1800000000" ] && ok "REPORTED writes the marker" || no "marker not written"
-tail -1 "$MH_AUDIT_JSONL" | jq -e '.part=="audit" and .state=="REPORTED" and .read_evidence=="last_line_match" and .findings_high==1 and .findings_medium==2 and .findings_low==3 and .scope_count==9 and .dry_run==false and (.run_dir|length>0)' >/dev/null \
+tail -1 "$MH_AUDIT_JSONL" | jq -e '.part=="audit" and .state=="REPORTED" and .read_evidence=="last_line_match" and .findings_high==1 and .findings_medium==2 and .findings_low==3 and .scope_count==17 and .dry_run==false and (.run_dir|length>0)' >/dev/null \
   && ok "jsonl record fields" || no "jsonl record wrong: $(tail -1 "$MH_AUDIT_JSONL")"
 saved="$(ls "$ST/claude-md-audit-reports/"*.md 2>/dev/null | head -1)"
 [ -n "$saved" ] && [ "$(ls -l "$saved" | cut -c1-10)" = "-rw-------" ] && ok "report copy saved with mode 600" || no "report copy missing/mode"
