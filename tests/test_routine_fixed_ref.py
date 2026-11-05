@@ -111,6 +111,8 @@ class FixedRefT5(unittest.TestCase):
         r, _c0, m_sha = self.shape641()
         x = r.commit([y.replace("for hooks", "for project hooks") for y in FIXED], 5)
         self.refuse(self.item(r), x)
+        y = r.commit([y.replace("for hooks", "for project hooks") for y in FIXED if y != "a"], 6)
+        self.refuse(self.item(r), y)  # deletes a line that is not L and adds no quote
         self.accept(self.item(r), m_sha)
 
     def test_d2_ref_before_the_audit_refused(self):
@@ -201,6 +203,15 @@ class FixedRefT5(unittest.TestCase):
             with self.subTest(m=m):
                 self.refuse(m, m_sha)
         self.accept(self.item(r), m_sha)
+
+    def test_g_line_and_occurrence_must_be_int_not_bool_or_float(self):
+        r = self.repo()
+        r.commit([L, "a", "see " + Q, "end"], 1)
+        f = r.commit(["a", "see " + Q, "end"], 3)
+        for line, occ in ((True, 1), (1.0, 1), (1, True), (1, 1.0)):
+            with self.subTest(line=line, occ=occ):
+                self.refuse(self.item(r, line=line, occ=occ), f)
+        self.accept(self.item(r, line=1, occ=1), f)
 
     def test_g_occurrence_counts_matches_not_lines(self):
         r = self.repo()
