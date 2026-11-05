@@ -20,6 +20,7 @@ argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --w
 
 <!-- Sync checklist: SKILL.md를 수정할 때마다 아래 항목을 확인한다.
   - [ ] SKILL.en.md에 동일 내용 반영
+  - [ ] reference/*.md 를 고쳤으면 짝 reference/*.en.md 에 동일 반영 (ko/en 파일 구조 1:1)
   - [ ] 새로운 bash 명령/에러 메시지가 있으면 영어로 작성
   - [ ] 버전/임계값 변경 시 양쪽 파일 동시 수정
 -->
@@ -44,15 +45,15 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 > - v1 명령은 deprecated alias로 계속 동작 (2026-12-31까지)
 
 ```
-/memory-health check         → 진단 (hook-safe — 기억 파일 변경 ❌ · 상태 기록 파일·git fetch 는 있음)
+/memory-health check         → 진단 (hook-safe — 기억 파일 변경 ❌ · 상태 기록 파일·git fetch 는 있음) [먼저 Read: reference/optimizer.md 1~3단계]
                               exit 0=정상, 1=warn, 2=critical
-/memory-health fix [--R1...] → Mutating Optimizer (R1~R10, 명시 R번호 — memory-health-rules.md 기준)
-/memory-health scan          → Scanner (memory/*.md 분리, 1회 승인)
-/memory-health rules         → Rules Checker (자동 로드 파일, read-only)
-/memory-health rules --strict → WARN 이상 exit 2
-/memory-health catalog       → 지식 카탈로그 빌더 (3축 메타데이터 인덱스 재생성)
-/memory-health fix --json    → dry-run JSON 출력
-/memory-health --with-md     → CLAUDE.md 품질 감사 (모든 명령 병용)
+/memory-health fix [--R1...] → Mutating Optimizer (R1~R10, 명시 R번호 — memory-health-rules.md 기준) [먼저 Read: reference/optimizer.md]
+/memory-health scan          → Scanner (memory/*.md 분리, 1회 승인) [먼저 Read: reference/scanner.md]
+/memory-health rules         → Rules Checker (자동 로드 파일, read-only) [먼저 Read: reference/rules-checker.md]
+/memory-health rules --strict → WARN 이상 exit 2 [먼저 Read: reference/rules-checker.md]
+/memory-health catalog       → 지식 카탈로그 빌더 (3축 메타데이터 인덱스 재생성) [먼저 Read: reference/with-md-catalog.md]
+/memory-health fix --json    → dry-run JSON 출력 [먼저 Read: reference/optimizer.md 1~3단계]
+/memory-health --with-md     → CLAUDE.md 품질 감사 (모든 명령 병용) [먼저 Read: reference/with-md-catalog.md · Phase A 는 reference/optimizer.md]
 ```
 
 **명령 경계 원칙 (DA C-7)**:
@@ -63,33 +64,45 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 ### v1 명령 (현재 구현, deprecated alias — 2026-12-31 까지)
 
 ```
-/memory-health               → 진단 (= v2 check)
-/memory-health --fix         → Optimizer (= v2 fix, deprecated warning)
-/memory-health --scan        → Scanner (= v2 scan, deprecated warning)
-/memory-health --rules       → Rules Checker (= v2 rules, deprecated warning)
-/memory-health --rules --strict → (= v2 rules --strict)
-/memory-health --fix --json  → (= v2 fix --json)
-/memory-health --with-md     → CLAUDE.md 감사 (v2 동일)
+/memory-health               → 진단 (= v2 check) [먼저 Read: reference/optimizer.md 1~3단계]
+/memory-health --fix         → Optimizer (= v2 fix, deprecated warning) [먼저 Read: reference/optimizer.md]
+/memory-health --scan        → Scanner (= v2 scan, deprecated warning) [먼저 Read: reference/scanner.md]
+/memory-health --rules       → Rules Checker (= v2 rules, deprecated warning) [먼저 Read: reference/rules-checker.md]
+/memory-health --rules --strict → (= v2 rules --strict) [먼저 Read: reference/rules-checker.md]
+/memory-health --fix --json  → (= v2 fix --json) [먼저 Read: reference/optimizer.md 1~3단계]
+/memory-health --with-md     → CLAUDE.md 감사 (v2 동일) [먼저 Read: reference/with-md-catalog.md · Phase A 는 reference/optimizer.md]
 ```
 
 기본값은 dry-run이므로 기억 파일(MEMORY.md·memory/*.md)은 변경되지 않는다. 원격 점검(②)은 `git fetch` 와 쿨다운 기록(`.remote-check-last`)을, 월간 루틴(③)은 기록·jsonl·보고서 파일을 쓴다.
 
 실행 흐름:
 ```
-/memory-health         → ① dry-run 결과 출력
+/memory-health         → ① dry-run 결과 출력 [먼저 Read: reference/optimizer.md — ① = 그 1~3단계]
                           ② skill 원격 최신화 점검 (CSR #962 — 인터넷 fetch, 4h 쿨다운, 비차단)
                           ③ 월간 루틴 (각 부분은 자기 기록이 기한 경과일 때만 — 아래 "월간 루틴" 절)
                              감사 부분: audit-record.sh pre → 읽기 전용 감사 에이전트 → post
                              업데이트 부분: audit-record.sh update-check (점검만, 적용 없음)
-                          ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true
-/memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행
-/memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행
-/memory-health --rules → Rules Checker 실행 (파일 변경 없음, 게이트 없음)
-/memory-health --with-md → 월간 루틴 두 부분 강제 실행 (주기 미경과도 실행)
+                          ℹ️  Rules Checker 미포함 — /memory-health --rules 또는 MEMORY_HEALTH_DEFAULT_RULES=true (켜면 먼저 Read: reference/rules-checker.md)
+/memory-health --fix   → dry-run 결과 출력 → 승인 게이트 → 실행 [먼저 Read: reference/optimizer.md]
+/memory-health --scan  → 스캔 결과 출력   → 승인 게이트 → 실행 [먼저 Read: reference/scanner.md]
+/memory-health --rules → Rules Checker 실행 (파일 변경 없음, 게이트 없음) [먼저 Read: reference/rules-checker.md]
+/memory-health --with-md → 월간 루틴 두 부분 강제 실행 (주기 미경과도 실행) [먼저 Read: reference/with-md-catalog.md · Phase A 는 reference/optimizer.md]
 ```
+
+### 절차 파일 (reference/) — 실행 전에 통째로 Read
+
+위 명령 줄의 `[먼저 Read: reference/X.md]` = 그 명령을 실행하기 전에 그 파일을 통째로 Read 한다(절차 본문이 그 파일에 있다).
+
+| 파일 | 내용 | 읽는 진입점 |
+|---|---|---|
+| `reference/optimizer.md` | Optimizer 단계 전부·완료 기준·한글 캡 주의 | 기본 `/memory-health`(=`check`, ① = 1~3단계) · `fix`/`--fix` · `fix --json`/`--fix --json`(1~3단계) · `--with-md` Phase A |
+| `reference/scanner.md` | Scanner 1~6단계·완료 기준 | `scan`/`--scan` |
+| `reference/rules-checker.md` | Rules Checker + 프로젝트 CLAUDE.md 크기 모니터링 | `rules`/`--rules`(`--strict`) · `MEMORY_HEALTH_DEFAULT_RULES=true` 인 기본 실행 |
+| `reference/with-md-catalog.md` | `--with-md` Phase A~C · Catalog | `--with-md` · `catalog` |
 
 ### --fix --json 모드
 
+이 단계 전에 `reference/optimizer.md` 를 통째로 Read 한다(1~3단계).
 3단계(dry-run 결과)까지 실행 후 JSON으로 출력하고 **즉시 종료**한다. 파일 변경 없음.
 
 출력 스키마:
@@ -367,229 +380,6 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 
 ---
 
-## Optimizer: MEMORY.md 줄 수 최적화 (`--fix`)
-
-### 전제 조건
-- hook(memory-line-check.sh)이 **≥ 160줄 또는 ≥ 20,000문자** 경고를 발생시킨 경우에 실행 권장 (CSR #1825: 단위=문자)
-- ★ 캡 단위는 **문자**다(CSR #1825 행동실측) — 한글 비율이 높아도 바이트가 먼저 캡에 닿지 않으며, 한글은 캡에서 오히려 여유를 준다. 판정은 **문자·줄** 두 축으로만 한다
-- MEMORY.md는 Scanner(`--scan`) 스캔 대상에서 제외 (이 파일만 Optimizer 적용)
-
-### 실행 단계 (7단계)
-
-**1단계 — 진단**
-```bash
-MEMORY_DIR="${CLAUDE_MEMORY_DIR:?'CLAUDE_MEMORY_DIR is not set'}"
-wc -l "${MEMORY_DIR}/MEMORY.md"
-# 문자 수(UTF-16 code unit) — 바이트(wc -c)가 아니다 (CSR #1825)
-MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
-t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
-print(sum(2 if ord(c)>0xFFFF else 1 for c in t))'
-```
-현재 줄 수와 문자 수를 출력한다.
-
-**2단계 — 분석** (CSR #962: 버전 문자열 grep → drift-check 기반 정합 검증으로 교체)
-```bash
-RULES_FILE="${MEMORY_DIR}/memory-health-rules.md"
-DRIFT="$HOME/.claude/skills/memory-health/scripts/memory-rules-drift-check.sh"
-# rules.md 존재 확인
-[ -r "$RULES_FILE" ] || { echo "❌ Rules file not found: $RULES_FILE" >&2; exit 1; }
-# 정합 검증: 버전 문자열(위조·stale fork 통과 가능)이 아니라 content drift로 판정.
-# 기대 버전은 하드코딩하지 않고 번들 템플릿에서 파생(H-3 단일 소스).
-bash "$DRIFT" --check || echo "⚠ rules 드리프트 감지 — 위 안내 확인 후 진행 (silent pass 금지)"
-```
-- **Fix B**: `# version:` 줄은 사람이 읽는 보조 마커로만 사용. 정합의 권위는 drift-check(axis0 canonical↔번들 / axis1 활성본↔base / axis2 번들 version)에 있다. 버전만 올린 stale fork는 axis0/axis2에서 잡힌다.
-- **H-3**: 기대 버전을 SKILL.md에 하드코딩하지 않는다(과거 `RULES_VERSION_REQUIRED="1.1.0"` 제거). 번들 템플릿의 `# version:`이 단일 소스.
-
-판단 기준 **R1~R10**(memory-health-rules.md 의 R 절 전부)을 로드하여 최적화 후보를 식별한다.
-즉흥적 판단 금지 — 반드시 rules 파일의 기준을 적용한다.
-
-**3단계 — 제안 (dry-run)**
-- 후보별 예상 변경 내용 출력
-- 적용 후 예상 줄 수 출력
-- `--fix --json` 모드인 경우: 위 JSON 스키마로 출력 후 **즉시 종료** (4~7단계 건너뜀)
-- 사용자 확인 대기
-
-**4단계 — 승인**
-사용자가 명시적으로 수락해야 5단계로 진행한다.
-묵시적 동의 불가 ("좋네요", "ㅇㅇ" 단독은 재확인 요청).
-
-**5단계 — 백업 (hard stop 적용)**
-```bash
-~/.claude/hooks/memory-backup.sh
-BACKUP_EXIT=$?
-if [ $BACKUP_EXIT -ne 0 ]; then
-  echo "❌ Backup failed (exit $BACKUP_EXIT). Aborting." >&2
-  echo "For recovery: git log --oneline -5" >&2
-  exit 1
-fi
-```
-백업 실패 시 6단계로 진입 불가.
-
-**6단계 — 실행**
-승인된 변경 사항을 MEMORY.md에 적용한다.
-Scanner 핸들러와 공유 상태(글로벌 변수, 파일 락) 없음.
-
-**7단계 — 검증 (의무)** — 줄 수 + 문자 수 동시 검증
-
-```bash
-LINES=$(wc -l < "${MEMORY_DIR}/MEMORY.md")
-# ★ 판정 축은 문자(UTF-16 code unit)다. 바이트가 아니다 (CSR #1825 행동실측).
-CHARS=$(MH_T="${MEMORY_DIR}/MEMORY.md" python3 -c 'import os
-t=open(os.environ["MH_T"],encoding="utf-8",errors="replace").read()
-print(sum(2 if ord(c)>0xFFFF else 1 for c in t))')
-
-LINE_FAIL=0
-CHAR_FAIL=0
-[ "$LINES" -gt 140 ] && LINE_FAIL=1
-[ "$CHARS" -gt 17500 ] && CHAR_FAIL=1
-
-if [ "$LINE_FAIL" -eq 1 ] || [ "$CHAR_FAIL" -eq 1 ]; then
-  echo "⚠ Verification failed: lines=${LINES}/140 chars=${CHARS}/17500. Further optimization needed." >&2
-else
-  echo "✅ Verification passed: lines=${LINES}/140 chars=${CHARS}/17500"
-  # 200줄·25,000문자 cap 대비 cap×0.7 목표선 (우리 선택 — 플랫폼 권위 아님)
-  ~/.claude/skills/memory-health/scripts/memory-health-log.sh \
-    "F3" "MEMORY.md 최적화" "${BEFORE}줄" "${LINES}줄/${CHARS}문자"
-fi
-```
-
-**8단계 — 게시판 #32 동기화 (의무, claude_fail #81 재발 방지)**
-
-MEMORY.md를 변경했으므로 게시판 동기화 페이지(claude-docs #32, "MEMORY.md — Claude Code 동기화 페이지")도 갱신한다. **손동기화 금지** — 결정론적 생성기가 MEMORY.md에서 #32를 전체 자동 생성한다:
-
-```bash
-~/.claude/scripts/sync-memory-to-board.sh
-SYNC_EXIT=$?
-if [ "$SYNC_EXIT" -ne 0 ]; then
-  echo "⚠ #32 동기화 실패 (exit $SYNC_EXIT) — 게시판 접근 확인 후 수동 재실행 필요: ~/.claude/scripts/sync-memory-to-board.sh" >&2
-fi
-```
-
-> **이중 안전망 (defense-in-depth)**: PostToolUse hook `memory-sync-detect.sh`도 MEMORY.md 편집을 감지해 알림하나, 본 스킬은 mutation 주체이므로 **명시적으로** 동기화한다. drift 점검만 필요하면 `--check`(read-only). 패턴 상세·정직 범위(near-forcing advisory, 동시수정 best-effort): `feedback_source-derived-sync-forcing-function`.
-
-### 완료 기준
-- MEMORY.md 줄 수 ≤ 140 (`wc -l` 검증 통과)
-- MEMORY.md **문자 ≤ 17,500** (UTF-16 code unit) — ★ CSR #1825: `wc -c` 바이트 판정은 **폐기**(한글에서 거짓 경고)
-- **게시판 #32 동기화 완료** (`sync-memory-to-board.sh` exit 0, 또는 실패 시 사용자 보고) — claude_fail #81
-- skill-audit.log에 실행 이력 기록
-
-### ★ 주의 — 한글 다수 환경 (캡 단위 = 문자, CSR #1825)
-
-**행동실측 (CSR #1825)**: 캡의 단위는 **바이트가 아니라 문자(UTF-16 code unit)** 다. 한글이 바이트를 키워도 캡에 먼저 닿지 않는다.
-
-| 관측 | 결과 |
-|---|---|
-| 24,899자 (74,353B) | 전문 로드 |
-| 25,099자 (74,951B) | **꼬리 절단** |
-| 10,734자 (31,534**B**) | 전문 로드 — **바이트 캡 없음** |
-| 302줄 (16,534자) | 절단 — 줄 캡 200 독립 실재 |
-| 12,909 code point / 25,409 UTF-16단위 | **절단** — 단위는 UTF-16 code unit |
-
-⇒ **한글은 바이트만 부풀릴 뿐 실제 캡에서는 오히려 여유를 준다.** 같은 의미를 한국어가 영어보다
-적은 문자로 표현하므로, 문자 캡 아래에서는 **한글이 불리하지 않다**(번역을 캡 압박으로 정당화할 수 없다).
-
-⚠ `wc -c` 로 판정하지 말 것 — 한글에서 3배로 부풀어 **거짓 경고**가 난다.
-재검증 = `tests/cap-boundary-probe.sh` (행동 프로브). `strings` 재실측은 판별력이 없다 — 같은 축이기 때문이다.
-
----
-
-## Scanner: MD 파일 크기 스캔 + 분리 (`--scan`)
-
-### 전제 조건
-- 스캔 대상: `memory/*.md` (MEMORY.md 제외)
-- 측정 기준: Python `len()` 기준 문자 수 (bytes 아님)
-- 임계: 10000자 초과 파일 (Phase F per-file cap 10000 tokens 정합, trader_log #199 2026-05-21)
-
-### 실행 단계 (6단계)
-
-**1단계 — 스캔**
-```python
-import os, glob
-MEMORY_DIR = os.environ.get("CLAUDE_MEMORY_DIR")
-if not MEMORY_DIR:
-    raise EnvironmentError("CLAUDE_MEMORY_DIR is not set")
-results = []
-for f in glob.glob(f"{MEMORY_DIR}/*.md"):
-    if os.path.basename(f) == "MEMORY.md":
-        continue  # Optimizer 전용 파일 — 제외
-    content = open(f, encoding="utf-8").read()
-    char_count = len(content)
-    if char_count > 10000:
-        results.append((f, char_count))
-results.sort(key=lambda x: x[1], reverse=True)
-for f, c in results:
-    print(f"{c:,}자  {os.path.basename(f)}")
-```
-
-**2단계 — 측정 + 보고**
-초과 파일 목록, 초과량, 섹션 헤더를 출력한다.
-
-**3단계 — 제안**
-각 파일의 자연스러운 분리 포인트를 제안한다.
-분리 후 파일명 예시: `{원본명}-part2.md`
-
-**4단계 — 선택 + 승인**
-사용자가 분리할 파일과 분리 포인트를 선택한다.
-명시적 수락 후 5단계로 진행.
-
-**5단계 — 백업 + 실행 (2-phase commit)**
-
-*단일 파일 분리:*
-```
-1. {원본명}-part2.md 생성
-2. MEMORY.md 포인터 갱신 (동일 git commit)
-   포인터 형식: "상세: {원본명}-part2.md [조건 트리거 1줄]"
-3. 검증: len(part1) + len(part2) = len(원본) ± 3자 이내
-4. 실패 시: git checkout -- {변경된 파일들}
-```
-
-*다중 파일 분리:*
-```
-Phase 1 (Prepare):
-  - 모든 분리 파일을 {원본명}-part2.md.tmp로 생성
-  - 포인터 갱신 내용을 {원본명}.patch로 준비
-Phase 2 (Commit):
-  - 모든 .tmp 파일 len() 합산 검증 통과 후
-  - 일괄 rename (.tmp 제거)
-  - 포인터 일괄 갱신
-  - .patch 파일 삭제
-실패 시:
-  - .tmp 파일 전체 삭제
-  - MEMORY.md 무수정 보장
-  - .patch 파일 삭제
-```
-
-**Phase2 롤백 판정 (분기 명세)**
-```
-(a) rename 실패:
-    .tmp 파일 전체 삭제, MEMORY.md 포인터 무변경 → 원상복구 완료
-    복구 확인: ls "${CLAUDE_MEMORY_DIR}"/*.tmp 2>/dev/null \
-              && echo "⚠ tmp 잔여 있음" || echo "✅ 정리 완료"
-
-(b) rename 성공 + 포인터 갱신 실패:
-    역방향 mv (part2 → 원본 복원) + git checkout -- MEMORY.md
-    복구 확인: git diff --name-only
-
-(c) len() 검증 실패 (양쪽 성공 후):
-    git checkout -- {변경된 모든 파일}
-    복구 확인: git status
-```
-각 분기에서 오류 메시지를 stderr에 출력한 뒤 exit 1.
-
-**6단계 — 검증 + 로그**
-분리 후 각 파일 len() 재측정. commit 성공 시에만 로그 기록:
-```bash
-~/.claude/skills/memory-health/scripts/memory-health-log.sh \
-  "F4" "${FILE} 분리" "${BEFORE}자" "${AFTER1}자 + ${AFTER2}자"
-```
-
-### 완료 기준
-- 모든 처리 파일이 10000자 이하 (Phase F per-file cap 정합)
-- MEMORY.md 포인터 갱신 완료 + 인덱스 일관성 검증
-- skill-audit.log에 실행 이력 기록
-
----
-
 ## 실패 모드 테이블
 
 | 단계 | 실패 조건 | authoritative 상태 | 복구 명령 |
@@ -641,189 +431,6 @@ Phase 2 (Commit):
 즉흥적 판단 금지. rules 파일에 없는 기준으로 후보를 선정하지 않는다.
 
 ---
-
----
-
-## Rules Checker: 자동 로드 파일 크기 검사 (`--rules`)
-
-### 전제 조건
-- `CLAUDE_RULES_DIR` 환경변수가 절대 경로로 설정되어 있어야 한다 (미설정 시 exit 1)
-- `CLAUDE_RULES_DIR` 설정: ① 권장 — `~/.zshrc` 등 shell profile에 `export CLAUDE_RULES_DIR=...` 직접 추가 · ② `install.sh` 실행 중 대화형 프롬프트(기본값 N)에서 저장을 선택하면 `~/.claude/da-tools/` 아래 `env.sh`가 생성되며 이를 source. 저장을 생략하면 `env.sh`는 생성되지 않으므로 ①을 사용
-- 스캔 대상: `CLAUDE_RULES_DIR` 직접 자식 `.md` 파일만 (서브디렉토리 무시)
-- 파일 수정 없음 (read-only) → 승인 게이트 없음
-
-### 기능 범위 고지
-이 기능은 **지정 디렉토리의 MD 파일 크기를 검사**한다.
-실제 Claude Code가 해당 파일을 로드하는지 여부는 보장하지 않는다.
-
-### 임계값 체계
-| 등급 | 임계값 | 의미 |
-|------|--------|------|
-| OK | < 20,000자 | 정상 |
-| WARN | 20,000 ~ 40,000자 | 조기 경고 (CRITICAL 50% 도달 시점) |
-| CRITICAL | > 40,000자 | 자체 선택 임계 (Claude Code 공식 경고와 별개 — 공식 임계는 모델 컨텍스트 창에 비례, CHANGELOG 2.1.169) |
-
-임계값 오버라이드: `CLAUDE_RULES_SIZE_WARN`, `CLAUDE_RULES_SIZE_CRITICAL` 환경변수
-
-### 심볼릭 링크 정책
-- symlink target을 한 번만 follow (최대 깊이 20)
-- realpath() 해시셋으로 중복 제거 + 순환 감지 (결정적, 순서 무관)
-- 순환 감지 시: WARN 출력 + 해당 항목 skip (exit 0)
-- 깊이 초과 시: WARN 출력 + skip (exit 0)
-
-### 실행 단계 (4단계)
-
-**1단계 — 환경 확인**
-```bash
-CLAUDE_RULES_DIR 설정 여부 확인 → 미설정 시 exit 1 (설정 오류)
-CLAUDE_RULES_DIR 디렉토리 존재 확인 → 없으면 exit 1 (설정 오류)
-```
-
-**2단계 — 스캔 (5초 wall-clock budget)**
-`scripts/check-rules.sh`를 실행한다:
-```bash
-bash ~/.claude/skills/memory-health/scripts/check-rules.sh [--strict]
-```
-타임아웃 초과 시: 완료된 파일까지 출력 + 미처리 파일 목록 (최대 10개) + exit 0
-
-**3단계 — 결과 출력**
-```
-=== Rules Checker ===
-대상: /path/to/rules
-주의: 지정 디렉토리 MD 파일 크기 검사 — 실제 Claude Code 로딩 여부 보장 안함
-      서브디렉토리 무시 | 심볼릭 링크: follow once (최대 깊이 20)
-
-🔴 CRITICAL    45,000자  huge-rule.md
-🟡 WARN        25,000자  some-large-rule.md
-✅ OK           4,000자  small-rule.md
-
-📊 CRITICAL 1건 — 자체 임계 초과 (> 40,000자 · Claude Code 공식 경고 임계는 컨텍스트 창 비례)
-   개선 방향:
-   1. 파일 L3(핵심 요약 자동 로드) + L4(상세 온디맨드) 구조로 분리
-   2. CLAUDE.md 자동 로드에서 제외 후 온디맨드 참조로 전환
-```
-
-**4단계 — audit 로그 (F5)**
-```bash
-memory-health-log.sh "F5" "rules-scan (read-only)" "CRITICAL=N" "WARN=M"
-```
-
-### Graceful 실패 정책
-
-| 실패 유형 | 출력 레벨 | exit code |
-|----------|----------|-----------|
-| CLAUDE_RULES_DIR 미설정 | WARN + skip | **1** |
-| 디렉토리 없음 | WARN + skip | **1** |
-| 특정 파일 파싱 실패 | ℹ️ skip + 계속 | 0 |
-| symlink 순환 감지 | ⚠ WARN + skip | 0 |
-| symlink 깊이 초과 | ⚠ WARN + skip | 0 |
-| 타임아웃 (기본) | partial result ⚠ + 미처리 목록 | 0 |
-| 타임아웃 (--strict) | partial result ⚠ + 미처리 목록 | **2** |
-| WARN 이상 (--strict) | 해당 출력 | **2** |
-| CRITICAL 파일 존재 | CRITICAL 출력 | 0 (read-only) |
-
-### `--strict` 모드
-CI/CD 파이프라인용. WARN 이상 비정상 상황 발생 시 exit 2.
-```bash
-bash check-rules.sh --strict
-```
-
-### 완료 기준
-- 스캔 결과 출력 완료
-- skill-audit.log에 F5 이력 기록
-
----
-
-## 프로젝트 CLAUDE.md(+분리 파일) 크기 모니터링 (READ-ONLY)
-
-사용자 MEMORY.md(Optimizer 대상)와 별개로, **외부 프로젝트 CLAUDE.md와 그 분리 파일**(예: aria·kr-ai-trader)의 크기를 점검·경고한다. **읽기 전용 — 파일을 수정하지 않는다.** 실제 내용 최적화는 해당 도메인 워크플로우(ARIA/KRIS = `/trader-task`)로 수행한다 (MEMORY.md 캡은 개인 메모리용이라 프로젝트 문서에 부적합 + 도메인·foreign repo 경계).
-
-```bash
-bash ~/.claude/skills/memory-health/scripts/check-project-claudemd.sh [--strict]
-```
-
-- **대상 목록**(우선순위): `--list=<경로>` > `$CLAUDE_PROJECT_CLAUDEMD_LIST` > `~/.claude/da-tools/project-claudemd-paths.txt` (한 줄 = 절대경로 **또는 glob 패턴**, `#`·빈 줄 무시)
-- **분리 파일 자동 포함**: 목록에 glob 패턴(예: `.../aria/CLAUDE*.md`)을 쓰면, 향후 CLAUDE.md를 분리(`CLAUDE-part2.md` 등)해도 **분리 파일이 자동으로 점검 대상에 포함**된다(realpath dedup). 도메인 워크플로우(`/trader-task`)가 분리 산출 시 별도 등록 불필요.
-- **임계(자 수, Rules Checker 정합)**: OK<20,000 / WARN 20,000~40,000 / CRITICAL>40,000 (env `CLAUDE_PROJECT_MD_WARN`·`CLAUDE_PROJECT_MD_CRITICAL`)
-- **graceful**: 목록 없음·볼륨 미마운트·매칭 0 = skip/경고 + exit 0 (비차단). `--strict` 시 WARN+ → exit 2 (CI용)
-- **통합**: `/memory-health check` 기본 실행과 `--rules`에 포함 권장. CRITICAL 발견 시 사용자에 보고하되 **자동 수정 금지** — 도메인 워크플로우 안내만.
-
----
-
-## CLAUDE.md 통합 (`--with-md`)
-
-> **전제 조건**: 위 "월간 루틴" 절의 전제 조건과 같다(절차 파일 + 감사 에이전트 정의, 내장 claude-api 스킬 켜짐).
-
-`--with-md`는 다른 플래그와 병용 가능하다: `/memory-health --with-md`, `/memory-health --fix --with-md`, `/memory-health --scan --with-md`.
-
-### 실행 흐름 (3 Phase)
-
-**Phase A — memory health (기존 동작)**
-- 기존 dry-run / `--fix` / `--scan` / `--rules` 로직 그대로 수행
-- Phase A 완료 후 Phase B로 진행
-
-**Phase B — 월간 루틴 강제 실행 (prompt-audit 감사 + 스킬 업데이트 점검)**
-
-주기와 무관하게 위 "월간 루틴" 절의 두 부분을 그대로 수행한다(독립된 단계 — Phase A 의 쓰기가 끝난 뒤):
-`audit-record.sh pre` → 하위 에이전트 `memory-health-prompt-auditor-ro`(포그라운드)에 manifest 경로 전달 →
-최종 메시지를 파일로 저장 → `audit-record.sh post` → `audit-record.sh update-check`.
-- 결과: 상태(`STATE`), findings 개수, 보고서 + 제안 diff, 업데이트 점검 목록
-- **이 단계에서는 파일을 수정하지 않는다** (보고만) — 제안 diff 적용은 별도 승인
-
-**Phase C — 세션 학습 처리**
-
-Phase B 완료 후, 이번 세션에서 나온 학습을 이렇게 다룬다(CLAUDE.md 에 덧붙이지 않는다 — CSR #2435 D3):
-- 작업 글(CSR·trader_log 등)이 있으면 그 작업의 G-7 가이드 단계에서 다룬다.
-- 없으면 학습을 보고하고 "보고만 했습니다 — 등록되지 않았습니다"라고 밝힌다.
-
-`--fix --with-md` 조합인 경우: Phase A의 `--fix` 완료 후 Phase B→C 순서로 이어진다.
-
-### --with-md 완료 기준
-- Phase A: 기존 모드별 완료 기준과 동일
-- Phase B: 두 부분의 상태 보고 완료 (파일 변경 없음)
-- Phase C: 학습을 G-7 단계로 넘겼거나 "보고만 했습니다 — 등록되지 않았습니다" 명시
-
----
-
-## Catalog: 지식 인덱스 카탈로그 (`catalog`)
-
-Claude가 참조하는 **모든 MD 파일 + AI 게시판(가이드·task log) + 설정 계층**의
-**메타데이터**(본문 아님)를 전수 수집해 재생성 가능한 인덱스로 만든다. "무엇이 어디에
-있는지"의 지도 — 특정 파일 본문은 그때그때 on-demand Read.
-
-### 수집 3축
-
-| 축 | 소스 | 수집 메타 |
-|----|------|----------|
-| ① MD 파일 | `~/.claude`(심링크 follow) · `~/workspace` · L'Atelier workspace | realpath · access_paths(심링크 다중경로) · 카테고리 · 제목(첫 #) · frontmatter description · 크기 · mtime |
-| ② AI 게시판 | **라이브 DB** `{board}_posts` (경로 해석은 ★ 아래) | 보드명 · 유형(guide/tasklog) · 게시물 id·title·status·tags·날짜 (**content 제외**) |
-
-> ★ **게시판 라이브 DB 경로 (반드시 이것을 참조)**: 빌더는 게시판 서버(`bulletin-board/src/db/database.js`)와 **동일한 해석 순서**로 DB를 연다 — `$DB_PATH` 환경변수 → `~/Library/Application Support/bulletin-board/bulletin.db` (라이브 기본값) → `$BB_HOME/data/bulletin.db` → `$BB_HOME/database.db` (in-repo 사본, **stale 가능**). **`$BB_HOME/data/bulletin.db`는 stale 보조본**이다 (실측 2026-05-29: live csr 860 vs stale 368, live 31보드 vs stale 19보드, trader_log 357건이 stale엔 부재). 직접 sqlite 조회 시에도 반드시 라이브 경로를 쓸 것. 상세: `feedback_bulletin-board-live-db-path.md`
-| ③ 설정 계층 | CLAUDE.md · rules · rules-canonical | ①에서 category 태깅 후 `config_hierarchy`로 재집계 |
-
-### 동작
-```bash
-bash ~/.claude/skills/memory-health/scripts/catalog.sh
-```
-- 빌더: `scripts/build-catalog.py` (python3). realpath 중복제거(심링크 1실체=1엔트리),
-  본문 미독(파일당 head 4KB만 — frontmatter+첫 제목), mount-graceful(미마운트 루트 skip + coverage 기록).
-- 출력 (read-only 보장 — 아래 2파일만 씀, `catalog/` 하위 = memory-health 자체 scan 대상과 분리):
-  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.json` — 전체 머신 SSOT
-  - `${CLAUDE_MEMORY_DIR}/catalog/knowledge-catalog.md` — 카테고리·보드 요약 + jq 조회 가이드 (≤10K 캡)
-- 멱등: 출력 dir 자기참조 제외 → 동일 입력 = 동일 출력.
-
-### 조회 (검색 서브명령 없음 — JSON 직접 조회)
-```bash
-CAT="$CLAUDE_MEMORY_DIR/catalog/knowledge-catalog.json"
-jq -r '.md.entries[]|select(.category=="skill")|.realpath' "$CAT"
-jq -r '.md.entries[]|select((.title//"")+(.description//"")|test("키워드";"i"))|.realpath' "$CAT"
-jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "$CAT"
-```
-
-### 완료 기준
-- `knowledge-catalog.json` 유효 + 3축 존재 + 중복 realpath 0
-- `knowledge-catalog.md` ≤10,000자
-- skill-audit.log에 F6 이력 기록
 
 ---
 

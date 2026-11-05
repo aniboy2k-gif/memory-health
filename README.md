@@ -97,7 +97,7 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 |---------|------|:-------------:|--------------|
 | Diagnose | *(default)* | No | Dry-run: reports current line/char counts |
 | Optimizer | `--fix` | **Yes** | Trims MEMORY.md to ≤ 140 lines / ≤ 17,500 characters (approval gate required) |
-| Scanner | `--scan` | **Yes** | Finds `memory/*.md` > 5,000 chars; splits into `*-part2.md` (approval gate required) |
+| Scanner | `--scan` | **Yes** | Finds `memory/*.md` > 5,000 chars; splits it — the split file name is decided first by memory-health-rules.md R10 (externalization destination routing); only when there is no hub, `{original}-part2.md` (approval gate required) |
 | JSON output | `--fix --json` | No | Dry-run results as JSON (pipeline/automation); exits after stage 3, no file changes |
 
 ---
@@ -138,7 +138,7 @@ touch "$CLAUDE_MEMORY_DIR/skill-audit.log"      && echo "created: skill-audit.lo
 
 1. **Scan** — find all `memory/*.md` (excluding MEMORY.md) exceeding 5,000 chars
 2. **Measure & Report** — list files with char counts and section headers
-3. **Propose** — suggest split points (Markdown section headers / logical boundaries); output: `{original}-part2.md`
+3. **Propose** — suggest split points (Markdown section headers / logical boundaries); the split file name is decided first by memory-health-rules.md R10 (externalization destination routing) — only when there is no hub, `{original}-part2.md`
 4. **Select & Approve** — you choose the split point and confirm before anything changes
 5. **Backup + Execute (2-phase commit)**:
    - Phase 1 (Prepare): write temporary files and prepare pointer updates — nothing is committed yet

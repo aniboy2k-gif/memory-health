@@ -1,5 +1,13 @@
 # INTERFACES.md — 컴포넌트 계약 명세
 
+## Contents
+- memory-backup.sh
+- memory-line-check.sh
+- memory-health-rules.md
+- memory-health-log.sh
+- check-rules.sh
+- 버전 호환성
+
 이 파일은 memory-health 스킬과 외부 의존 파일 사이의 입출력 계약을 정의한다.
 외부 파일을 직접 구현할 때 이 계약을 반드시 준수해야 한다.
 
@@ -48,7 +56,7 @@
 | **위치** | `${CLAUDE_MEMORY_DIR}/memory-health-rules.md` |
 | **첫 줄** | `# version: {semver}` — Optimizer가 버전 일치 여부를 검사 |
 | **현재 필요 버전** | `1.1.0` (CSR #807, 2026-05-23 — R7·R8 추가) |
-| **내용** | R1~R8 최적화 규칙 정의 (마크다운 자유 형식) |
+| **내용** | R1~R10 최적화 규칙 정의 (마크다운 자유 형식) |
 | **쓰기 주체** | 사용자 (직접 편집) |
 | **읽기 주체** | Optimizer (`--fix` 2단계에서 Read) |
 | **버전 불일치 시** | Optimizer가 stderr 오류 출력 후 exit 1 |
