@@ -66,6 +66,7 @@ bash ~/.claude/skills/memory-health/scripts/catalog.sh
 ```bash
 CAT="$CLAUDE_MEMORY_DIR/catalog/knowledge-catalog.json"
 jq -r '.md.entries[]|select(.category=="skill")|.realpath' "$CAT"
+jq -r '.md.entries[]|select((.title//"")+(.description//"")|test("keyword";"i"))|.realpath' "$CAT"
 jq -r '.board.entries[]|select(.board=="csr")|"\(.id)\t\(.status)\t\(.title)"' "$CAT"
 ```
 

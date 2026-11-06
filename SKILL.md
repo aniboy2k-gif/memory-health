@@ -61,7 +61,7 @@ Optimizer (MEMORY.md 줄 수 최적화), Scanner (memory/*.md 파일 크기 분�
 - **fix / scan / rules** = 명시적 mutating 또는 read-only — 분리된 surface
 - 기본 명령 = `check` (안전 측 default)
 
-### v1 명령 (현재 구현, deprecated alias — 2026-12-31 까지)
+### v1 명령 (deprecated alias — 2026-12-31 까지)
 
 ```
 /memory-health               → 진단 (= v2 check) [먼저 Read: reference/optimizer.md 1~3단계]
