@@ -5,7 +5,7 @@
 ### 전제 조건
 - 스캔 대상: `memory/*.md` (MEMORY.md 제외)
 - 측정 기준: Python `len()` 기준 문자 수 (bytes 아님)
-- 임계: 10000자 초과 파일 (Phase F per-file cap 10000 tokens 정합, trader_log #199 2026-05-21)
+- 임계: 10000자 초과 파일 (Phase F per-file cap 은 10000 **토큰**이라 단위가 다른 근사 기준, trader_log #199 2026-05-21)
 
 ### 실행 단계 (6단계)
 

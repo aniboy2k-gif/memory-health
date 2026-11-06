@@ -5,7 +5,7 @@
 ### Prerequisites
 - Scan target: `memory/*.md` (excluding MEMORY.md)
 - Measurement: character count via Python `len()` (not bytes)
-- Threshold: files exceeding 10,000 characters (aligned with the Phase F per-file cap of 10,000 tokens, trader_log #199 2026-05-21)
+- Threshold: files exceeding 10,000 characters (an approximation: the Phase F per-file cap is 10,000 **tokens**, a different unit, trader_log #199 2026-05-21)
 
 ### Steps (6 steps)
 

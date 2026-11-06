@@ -109,3 +109,20 @@ fi
 - MEMORY.md line count ≤ 140 and character count ≤ 17,500 (UTF-16 code units — **not** `wc -c` bytes)
 - **Board #32 synced** (`sync-memory-to-board.sh` exit 0, or reported to user on failure) — claude_fail #81
 - Execution history recorded in skill-audit.log
+
+### ★ Note — Korean-heavy environments (cap unit = characters, CSR #1825)
+
+**Behavioral measurement (CSR #1825)**: the cap's unit is **characters (UTF-16 code units), not bytes**. Korean inflates bytes but does not reach the cap sooner.
+
+| Observation | Result |
+|---|---|
+| 24,899 chars (74,353 B) | loaded in full |
+| 25,099 chars (74,951 B) | **tail truncated** |
+| 10,734 chars (31,534 **B**) | loaded in full — **no byte cap** |
+| 302 lines (16,534 chars) | truncated — the 200-line cap is independent and real |
+| 12,909 code points / 25,409 UTF-16 units | **truncated** — the unit is the UTF-16 code unit |
+
+⇒ **Korean only inflates bytes; under the real cap it gives more room.** Korean expresses the same meaning in fewer characters than English, so under a character cap Korean is **not** disadvantaged (a translation cannot be justified as cap pressure).
+
+⚠ Do not judge with `wc -c` — Korean inflates it about 3× and raises a **false warning**.
+Re-verify with `tests/cap-boundary-probe.sh` (behavioral probe). Re-running `strings` cannot discriminate — it measures the same axis.
