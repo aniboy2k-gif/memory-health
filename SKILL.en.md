@@ -1,7 +1,6 @@
 ---
 name: memory-health
 description: "Diagnoses and optimizes the health of Claude Code auto-memory files (MEMORY.md, memory/*.md) and auto-loaded rule files — MEMORY.md Optimizer R1~R10, memory/*.md Scanner, Rules Checker, and periodic CLAUDE.md audit (monthly routine). Use when MEMORY.md approaches its line or character cap, when memory/*.md files grow too large, when auditing CLAUDE.md or other auto-loaded rule files, when a session-start notice suggests running '/memory-health routine', or when the user asks to check or clean up these memory files or runs /memory-health. Not for recalling conversation content or remembered facts."
-argument-hint: '[check] | fix [--R1...] [--json] | scan | rules [--strict] | --with-md | --fix | --scan | --rules [--strict] | --fix --json | --fix --with-md | --scan --with-md'
 ---
 
 # /memory-health

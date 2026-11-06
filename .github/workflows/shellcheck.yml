@@ -22,5 +22,25 @@ jobs:
           fi
           shellcheck --version
 
-      - name: Run ShellCheck
-        run: shellcheck install.sh scripts/*.sh
+      # ShellCheck does not support zsh (SC1071), so zsh scripts are split off by their shebang
+      # line only and syntax-checked with `zsh -n` instead. Classifying by line 1 (not grep -L)
+      # keeps a bash file that merely contains a "#!/bin/zsh" line in a heredoc in the lint set.
+      - name: Run ShellCheck (bash/sh) and zsh -n (zsh)
+        shell: bash
+        run: |
+          sh_files=(); zsh_files=()
+          for f in install.sh scripts/*.sh; do
+            [ -f "$f" ] || { echo "missing: $f"; exit 1; }
+            if head -n 1 "$f" | grep -qE '^#!(/bin/|/usr/bin/env )zsh([[:blank:]]|$)'; then
+              zsh_files+=("$f")
+            else
+              sh_files+=("$f")
+            fi
+          done
+          [ "${#sh_files[@]}" -gt 0 ] || { echo "no shell files to lint"; exit 1; }
+          echo "shellcheck: ${#sh_files[@]} files · zsh -n: ${#zsh_files[@]} files"
+          shellcheck "${sh_files[@]}"
+          if [ "${#zsh_files[@]}" -gt 0 ]; then
+            command -v zsh >/dev/null || { sudo apt-get update; sudo apt-get install -y --no-install-recommends zsh; }
+            for f in "${zsh_files[@]}"; do zsh -n "$f"; done
+          fi
