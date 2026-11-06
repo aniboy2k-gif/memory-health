@@ -309,6 +309,10 @@ $RI start [--force]          # take the routine lease + run row (due_parts); ref
 $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 ```
 
+- ★ How to count: `open` in `peek` and in `status` (without --check-refs) leaves out items earlier sent away as `task` — `--check-refs` reopens them as `orphaned_task` once that CSR closes (CSR #2509: 40 became 78). They are announced as `task-unchecked N` and "N task-disposed item(s) not ref-checked". Completion and reports always count from `--check-refs --run`.
+- ★ Diagnose read-only: when running a channel producer (`upstream-copy-check.py` etc.) by hand, use `--dry-run`. A plain run leaves a log line and the next `scan-channels` opens it as an item (CSR #2509: 3 items).
+- ★ Changing a skill to `local_custom` in `skill-sources.json` lowers the upstream-copy check's tracked count below `expected_min_targets` → in the same work run `upstream-copy-check.py --set-floor <new count> --reason "<skills changed>"` (otherwise the next weekly run reports `FAIL`).
+
 - P-E scope = the official `/doctor prompt-audit` default scope (CLAUDE.md, rules, skills, commands, agents, output-styles in the config folder) plus,
   for each root in `channels.json` `project_roots`, its CLAUDE.md, CLAUDE.local.md, AGENTS.md and `.claude/{rules,skills,commands,agents,output-styles}`.
   600,000 chars a month (8 shards of 75,000); at least 300,000 go to never-audited then oldest-audited files, the rest to changed files. Files larger than
@@ -322,7 +326,7 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 |---|---|---|
 | `fixed` | `--ref` = commit sha · PR URL · `CSR #N c#M` (checked against that post's comments) | an audit finding whose file still holds the quote (exception: the ref is a commit sha, that commit deleted the line the audit recorded, and the quote remains only on other lines — e.g. the fixing commit's own marker line — accepted) · `part_failed` only with the `ts` of a PASS row of that part after the item's last FAILED row (any run; a PASS before the failure is refused) |
 | `task` | `--ref "CSR #N"` — that post's body or a comment must contain the item id verbatim | board unreachable |
-| `dismissed` | `--reason` ≥ 20 chars | allowed kinds only: audit finding (not high), update-available, unused-extension, plugin-version-changed, unclassified. An audit-finding dismissal is bound to the file's sha256 and reopens when the file changes |
+| `dismissed` | `--reason` ≥ 20 chars | allowed kinds only: audit finding (not high), update-available, unused-extension, plugin-version-changed, unclassified, dep-outdated, dep-vulnerable (not sev=high). An audit-finding dismissal is bound to the file's sha256 and reopens when the file changes |
 | `deferred` | all of `--goal --deadline (YYYY-MM-DD, within 90 days) --method --revert` | once per item · not for sev=high |
 | `verified` | `--reason` with evidence (command + output line) ≥ 20 chars | `unknown` and `unobserved_plugin` cannot be closed by a session — the next scan must re-read the source; then the tool writes `fixed recheck:<run>` |
 
@@ -335,6 +339,7 @@ $RI status --check-refs --run <RUN_ID>   # repeat until disposition is complete
 | fix in personal local files | direct edit after a backup |
 | owner-only (money, permission, credentials, irreversible, taste) · doctor permission-rule warning | `task` into this month's follow-up CSR, tagged `waiting` |
 | skill update available | read the upstream diff; `update.py <skill> --apply` in a claude-forge worktree + PR, or `dismissed` (local divergence on purpose) |
+| dependency vulnerability (`dep-vulnerable`, from `npm audit`) | critical (sev=high): `fixed` (bump the dependency + tests) or `task`. high/moderate: bump if possible, otherwise `dismissed` on the input path (can outside input reach it?). A new advisory changes the id and reopens it |
 | plugin version changed | check `claude plugin list --json` shows it enabled without errors → `verified` |
 | auto-update marketplace not refreshed for > 14 days | `claude plugin marketplace update <name>`, re-check, record |
 | `unobserved_plugin` (auto-update off + no upstream observation in 45 days) | add an observation rule to an upstream-checking channel or turn auto-update on — the next scan closes it |

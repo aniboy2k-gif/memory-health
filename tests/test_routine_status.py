@@ -114,3 +114,28 @@ class TestCoverageRecheck(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── CSR #2509 follow-up P1/P6: task-disposed items are visible before --check-refs; refusal says when it ends ──
+class TestUncheckedTasks(Base):
+    fail_d = TestPartFailedOrder.fail_d  # same setup: one part_failed item disposed as task
+
+    def test_status_notes_unchecked_task_count(self):
+        self.fail_d()
+        code, st = self.status()
+        self.assertTrue(any("1 task-disposed" in n for n in st["notes"]), st["notes"])
+
+    def test_status_without_tasks_has_no_such_note(self):
+        self.start()
+        _code, st = self.status()
+        self.assertFalse(any("task-disposed" in n for n in st["notes"]), st["notes"])
+
+    def test_peek_shows_unchecked_tasks_even_when_nothing_else_is_open(self):
+        self.fail_d()
+        self.assertIn("task-unchecked 1", self.ok("peek").stdout)
+
+    def test_start_refusal_says_remaining_time(self):
+        self.start(sid="S1")
+        p = self.run_ri("start", sid="S2")
+        self.assertEqual(p.returncode, 1)
+        self.assertRegex(p.stdout + p.stderr, r"lease ends in \d+ ?min")

@@ -706,6 +706,7 @@ case "$1" in
   outdated)
     [ -n "$FAKE_NPM_OUTDATED_SLEEP" ] && exec sleep "$FAKE_NPM_OUTDATED_SLEEP"
     printf '%s' "$FAKE_NPM_OUTDATED_OUT"; exit "${FAKE_NPM_OUTDATED_RC:-0}" ;;
+  audit) printf '%s' "$FAKE_NPM_AUDIT_OUT"; exit "${FAKE_NPM_AUDIT_RC:-0}" ;;
   view) printf '%s\\n' "$FAKE_NPM_VIEW_OUT"; exit "${FAKE_NPM_VIEW_RC:-0}" ;;
 esac
 exit 64
@@ -726,7 +727,8 @@ class TestDeps(Base):
         self.config(dep_roots=[self.root])
 
     def deps(self, path=None, **fake):
-        env = {"FAKE_NPM_LOG": self.npm_log, "MH_DEP_TIMEOUT_S": 1, "FAKE_NPM_CONFIG_OUT": "{}", "FAKE_NPM_OUTDATED_OUT": "{}"}
+        env = {"FAKE_NPM_LOG": self.npm_log, "MH_DEP_TIMEOUT_S": 1, "FAKE_NPM_CONFIG_OUT": "{}", "FAKE_NPM_OUTDATED_OUT": "{}",
+               "FAKE_NPM_AUDIT_OUT": '{"vulnerabilities": {}}'}
         env.update({"FAKE_NPM_" + k.upper(): v for k, v in fake.items()})
         env["PATH"] = path if path is not None else self.bin + os.pathsep + os.environ.get("PATH", "")
         return self.run_ri("scan-deps", **env)
@@ -852,7 +854,8 @@ class TestDeps(Base):
         root = os.path.realpath(self.root)
         self.assertEqual([(h.split(" ", 1)[1], args) for h, args in calls],
                          [(root, "config list --json"),
-                          (root, "outdated --json --registry https://registry.npmjs.org/")])
+                          (root, "outdated --json --registry https://registry.npmjs.org/"),
+                          (root, "audit --json --registry https://registry.npmjs.org/")])
 
     def test_n_root_without_node_modules_skipped(self):
         bare, linked = os.path.join(self.t, "tool-b"), os.path.join(self.t, "tool-c")
@@ -865,7 +868,7 @@ class TestDeps(Base):
         p = self.deps()
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("SKIP tool-b (no node_modules)", p.stdout)
-        self.assertEqual(self.npm_calls(), ["config", "outdated"])  # only the symlinked root is scanned
+        self.assertEqual(self.npm_calls(), ["config", "outdated", "audit"])  # only the symlinked root is scanned
 
     def test_o_dep_outdated_dismissable(self):
         self.start()
@@ -974,3 +977,49 @@ class TestHook(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── CSR #2509 follow-up P4: scan-deps also reads `npm audit` (outdated alone hid 3 high advisories) ──
+def audit_out(**vulns):
+    return json.dumps({"vulnerabilities": {n: {"name": n, "severity": sev, "isDirect": False,
+                                               "via": [{"source": src, "title": "t-" + n, "severity": sev}]}
+                                           for n, (sev, src) in vulns.items()}})
+
+
+class TestDepsAudit(TestDeps):
+    def vulns(self):
+        return self.items("dep-vulnerable")
+
+    def test_audit_severity_maps_and_names_the_advisory(self):
+        self.start()
+        p = self.deps(audit_out=audit_out(undici=("high", 111), lodash=("critical", 222), minimatch=("moderate", 333)),
+                      audit_rc=1)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        got = {r["package"]: r["sev"] for r in self.vulns()}
+        self.assertEqual(got, {"undici": "medium", "lodash": "high", "minimatch": "low"})
+        self.assertIn("high", [r for r in self.vulns() if r["package"] == "undici"][0]["summary"])
+
+    def test_same_advisory_does_not_duplicate_new_advisory_reopens(self):
+        self.start()
+        self.deps(audit_out=audit_out(undici=("high", 111)), audit_rc=1)
+        self.deps(audit_out=audit_out(undici=("high", 111)), audit_rc=1)
+        self.assertEqual(len(self.vulns()), 1)
+        self.deps(audit_out=audit_out(undici=("high", 999)), audit_rc=1)
+        self.assertEqual(len(self.vulns()), 2)
+
+    def test_audit_garbage_fails_part_g(self):
+        self.start()
+        self.assert_one_failure(self.deps(audit_out="npm WARN x\n", audit_rc=1), "dep-scan-failed", "audit-non-json")
+
+    def test_audit_error_envelope_fails_part_g(self):
+        self.start()
+        env = json.dumps({"error": {"code": "ENOAUDIT", "summary": "x"}})
+        self.assert_one_failure(self.deps(audit_out=env, audit_rc=1), "dep-scan-failed", "audit-error-envelope:ENOAUDIT")
+
+    def test_dep_vulnerable_dismissable_unless_critical(self):
+        self.start()
+        self.deps(audit_out=audit_out(undici=("high", 111), lodash=("critical", 222)), audit_rc=1)
+        by = {r["package"]: r["id"] for r in self.vulns()}
+        why = "dev-tool only, no network input reaches it"
+        self.assertEqual(self.run_ri("dispose", by["undici"], "--disp", "dismissed", "--reason", why).returncode, 0)
+        self.assertEqual(self.run_ri("dispose", by["lodash"], "--disp", "dismissed", "--reason", why).returncode, 1)

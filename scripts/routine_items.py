@@ -43,7 +43,7 @@ OBS_WINDOW_DAYS = 45
 PEEK_CAP = 600
 PARTS = "ABCDEFG"
 COVERAGE_KINDS = ("unknown", "unobserved_plugin")
-DISMISSABLE = ("finding", "update-available", "unused-extension", "plugin-version-changed", "unclassified", "dep-outdated")
+DISMISSABLE = ("finding", "update-available", "unused-extension", "plugin-version-changed", "unclassified", "dep-outdated", "dep-vulnerable")
 SEV_RANK = {"high": 3, "medium": 2, "low": 1}
 SOURCE_MAX = 500
 
@@ -486,8 +486,16 @@ def compute_status(check_refs=False, run=None):
     blocked = sorted({b for b in blocked if b not in open_ids})
     code = 2 if code2 else 1 if opened else 4 if blocked else 0
     if not check_refs:
+        nt = len(task_disposed_ids(f))
+        if nt:  # CSR #2509: these reopen as orphaned_task/unlinked_task once their CSR closes; `open=` above does not count them
+            notes.append("%d task-disposed item(s) not ref-checked — they may reopen as orphaned_task/unlinked_task" % nt)
         notes.append("task refs not checked — completion needs `status --check-refs --run <latest run_id>`")
     return code, code2, opened, blocked, notes, f
+
+
+def task_disposed_ids(f):
+    """ids whose latest disposition is `task` (their CSR is only read by --check-refs)."""
+    return [i for i, e in f.items() if item_state(e) == "disposed" and e["disps"] and e["disps"][-1][1].get("disp") == "task"]
 
 
 def _status_task_ref(i, d, refs, code2, opened):
@@ -578,11 +586,12 @@ def cmd_peek():
     due = due_parts(pending=len(events))
     iv = interval_days()
     od, od_items = _peek_overdue(f, open_ids, t, iv)
+    ntask = len(task_disposed_ids(f))
     signal.setitimer(signal.ITIMER_REAL, 0)
-    if not (open_ids or due or events or unknown):
+    if not (open_ids or due or events or unknown or ntask):
         touch_peek_last()
         return 0
-    bits = _peek_bits(unknown, open_ids, due, events, iv)
+    bits = _peek_bits(unknown, open_ids, due, events, iv, ntask)
     instr = _peek_instr()
     # measured (CSR #2491 landing): `claude -p` hooks see CLAUDE_CODE_ENTRYPOINT=sdk-cli, interactive = cli
     headless = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "").startswith("sdk")
@@ -614,12 +623,14 @@ def _peek_overdue(f, open_ids, t, iv):
     return od, od_items
 
 
-def _peek_bits(unknown, open_ids, due, events, iv):
+def _peek_bits(unknown, open_ids, due, events, iv, ntask=0):
     bits = []
     if unknown:
         bits.append("ledger unreadable")
     if open_ids:
         bits.append("open %d" % len(open_ids))
+    if ntask:  # their CSRs are only read by `status --check-refs`; `open` above does not include a closed one
+        bits.append("task-unchecked %d" % ntask)
     if due:
         bits.append("due %s" % ",".join(due))
     if events:
@@ -681,7 +692,9 @@ def cmd_start(force):
         out = []
         if lease and lease.get("session_id") != sid:
             if lease_fresh(lease):
-                raise Refuse("routine running in session %s" % str(lease.get("session_id"))[:8])
+                left = max(1, int((LEASE_STALE_S - (now() - float(lease.get("heartbeat_ts") or 0)) + 59) // 60))
+                raise Refuse("routine running in session %s (lease ends in %d min unless that session keeps working)"
+                             % (str(lease.get("session_id"))[:8], left))
             out.append({"ts": iso(), "type": "lease_takeover", "old_session": lease.get("session_id"),
                         "old_heartbeat": lease.get("heartbeat_ts"), "session": sid})
             write_lease(sid)
