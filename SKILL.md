@@ -309,6 +309,10 @@ $RI start [--force]          # 실행권(lease) 획득 + run 행(due_parts). 다
 $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 ```
 
+- ★ 세는 법: `peek`·`status`(--check-refs 없음)의 `open` 에는 이전에 `task` 로 넘긴 항목이 안 들어간다 — 그 CSR 이 닫히면 `--check-refs` 가 `orphaned_task` 로 다시 연다(CSR #2509: 40건이 78건이 됨). 둘은 각각 `task-unchecked N`·「N task-disposed item(s) not ref-checked」로 알린다. 완료·보고 수는 항상 `--check-refs --run` 결과 기준.
+- ★ 진단은 읽기 전용으로: 채널 생산자(`upstream-copy-check.py` 등)를 손으로 돌릴 때는 `--dry-run` 을 쓴다. 그냥 돌리면 로그에 줄이 남아 다음 `scan-channels` 가 항목으로 연다(CSR #2509: 3건).
+- ★ 스킬을 `skill-sources.json` 에서 `local_custom` 으로 바꾸면 사본 점검의 추적 대상 수가 줄어 `expected_min_targets` 아래로 떨어진다 → 같은 작업에서 `upstream-copy-check.py --set-floor <새 수> --reason "<전환한 스킬>"` 을 실행한다(안 하면 다음 주간 실행이 `FAIL`).
+
 - P-E 범위 = 공식 `/doctor prompt-audit` 기본 범위(설정 폴더의 CLAUDE.md·rules·skills·commands·agents·output-styles) + `channels.json` 의
   `project_roots` 각 루트의 CLAUDE.md·CLAUDE.local.md·AGENTS.md·`.claude/{rules,skills,commands,agents,output-styles}`. 월 60만 자(7만5천 자 조각 8개),
   그중 30만 자 이상은 한 번도 감사 안 된 파일 → 가장 오래된 파일에, 나머지는 바뀐 파일에. 7만5천 자보다 큰 파일은 줄 범위 조각으로 나눠 여러 달에 걸쳐 덮는다.
@@ -321,7 +325,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 |---|---|---|
 | `fixed` | `--ref` = 커밋 sha · PR URL · `CSR #N c#M`(그 글의 댓글로 확인) | 감사 지적은 그 파일에 인용문이 남아 있으면 거부(예외: `--ref` 가 커밋 sha 이고, 그 커밋이 감사가 기록한 그 줄을 지웠으며 인용문이 다른 줄에만 남은 경우 — 이를테면 고친 커밋이 자기 표지 줄에 같은 문자열을 넣은 경우 — 수락) · `part_failed` 는 그 항목의 마지막 FAILED 행 뒤에 온 같은 부분 PASS 행의 `ts` 만(어느 run 이든, 실패 전 PASS 는 거부) |
 | `task` | `--ref "CSR #N"` — 그 글 본문/댓글에 항목 id 가 그대로 있어야 함 | 게시판 접속 불가면 거부 |
-| `dismissed` | `--reason` 20자 이상 | 허용 종류만: 감사 지적(high 제외)·update-available·unused-extension·plugin-version-changed·unclassified. 감사 지적의 기각은 그 파일의 sha256 에 묶여, 파일이 바뀌면 다시 열린다 |
+| `dismissed` | `--reason` 20자 이상 | 허용 종류만: 감사 지적(high 제외)·update-available·unused-extension·plugin-version-changed·unclassified·dep-outdated·dep-vulnerable(sev=high 제외). 감사 지적의 기각은 그 파일의 sha256 에 묶여, 파일이 바뀌면 다시 열린다 |
 | `deferred` | `--goal --deadline(YYYY-MM-DD, 90일 안) --method --revert` 넷 다 | 항목당 한 번만 · sev=high 불가 |
 | `verified` | `--reason` 에 근거(명령과 출력 줄) 20자 이상 | `unknown`·`unobserved_plugin` 은 세션이 닫지 못한다 — 다음 스캔이 원천을 다시 읽어야 도구가 `fixed recheck:<run>` 을 쓴다 |
 
@@ -334,6 +338,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 | 개인 로컬 파일 수정 | 백업 후 직접 수정 |
 | 소유자만 정할 것(돈·권한·자격증명·비가역·취향) · doctor 권한 규칙 경고 | 이번 달 후속 CSR 에 `task`, 그 글에 `waiting` 태그 |
 | 스킬 업데이트 가능 | 상류 diff 를 읽고 claude-forge 작업 트리에서 `update.py <skill> --apply` + PR, 또는 `dismissed`(일부러 갈라 둔 로컬 수정) |
+| 의존성 취약점(`dep-vulnerable`, `npm audit` 가 낸 것) | critical(sev=high)은 `fixed`(의존성 올림 + 시험)·`task`. high·moderate 는 올림 가능이면 올리고, 아니면 입력 경로(외부 입력이 닿는가)를 근거로 한 `dismissed`. 새 권고가 생기면 id 가 달라져 다시 열린다 |
 | 플러그인 판 바뀜 | `claude plugin list --json` 에서 오류 없이 켜져 있는지 보고 `verified` |
 | 자동 갱신 마켓 14일 넘게 안 갱신 | `claude plugin marketplace update <이름>` 후 다시 확인·기록 |
 | `unobserved_plugin`(자동 갱신 꺼짐 + 45일 안 상류 관찰 없음) | 상류를 확인하는 채널의 관찰 규칙에 넣거나 자동 갱신을 켠다 — 다음 스캔이 닫는다 |

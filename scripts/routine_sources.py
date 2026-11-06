@@ -606,6 +606,39 @@ def outdated_verdict(rc, out):
     return d, None
 
 
+AUDIT_SEV = {"critical": "high", "high": "medium", "moderate": "low"}  # item sev; low/info advisories are not raised
+
+
+def audit_verdict(rc, out):
+    """-> ([(package, audit severity, sorted advisory ids, first title)], None) on success, else (None, reason).
+    `npm audit` exits 1 when it found vulnerabilities, so rc 0 and 1 are both a valid report."""
+    if rc is None:
+        return None, "audit-timeout" if out == "timeout" else "audit-exit-error"
+    if rc not in (0, 1):
+        return None, "audit-exit-%d" % rc
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return None, "audit-non-json"
+    if not isinstance(d, dict):
+        return None, "audit-malformed"
+    if "error" in d:
+        code = d["error"].get("code") if isinstance(d["error"], dict) else None
+        return None, "audit-error-envelope:%s" % (code or "unknown")
+    vulns = d.get("vulnerabilities")
+    if not isinstance(vulns, dict) or not all(isinstance(v, dict) for v in vulns.values()):
+        return None, "audit-malformed"
+    res = []
+    for name, v in sorted(vulns.items()):
+        sev = v.get("severity")
+        if sev not in AUDIT_SEV:
+            continue
+        via = [x for x in v.get("via") or [] if isinstance(x, dict)]
+        ids = sorted({str(x.get("source") or x.get("url") or "") for x in via if x.get("source") or x.get("url")})
+        res.append((name, sev, ids, (via[0].get("title") if via else None) or "transitive"))
+    return res, None
+
+
 def npx_cached(name):
     """-> version of the newest-mtime cached package.json under ~/.npm/_npx, or None."""
     best = None
@@ -650,6 +683,14 @@ def _scan_root(b, root, fail):
                             "%s %s (wanted %s, latest %s) in %s" % (name, v["current"], v.get("wanted", "-"), v["latest"],
                                                                    os.path.basename(root.rstrip("/"))),
                             package=name, current=v["current"], wanted=v.get("wanted"), latest=v["latest"], root=root))
+    # CSR #2509: `outdated` alone rated everything low while `npm audit` showed high advisories (da-tools, 2026-11-06)
+    found, why = audit_verdict(*run_npm(["audit", "--json", "--registry", NPM_REGISTRY], cwd=root))
+    if why:
+        return fail(root, why)
+    for name, sev, ids, title in found:
+        b.item(ri.make_item("G", "dep-vulnerable", "%s\n%s\n%s\n%s" % (root, name, sev, ",".join(ids)), AUDIT_SEV[sev],
+                            "%s has a %s advisory (%s) in %s" % (name, sev, title, os.path.basename(root.rstrip("/"))),
+                            package=name, audit_severity=sev, advisories=ids, root=root))
 
 
 def _scan_npx(b, name, fail):
