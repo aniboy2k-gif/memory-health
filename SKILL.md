@@ -209,7 +209,8 @@ AUDIT_DAYS=$(days_since "$AUDIT_LAST"); UPDATE_DAYS=$(days_since "$UPDATE_LAST")
 ### 감사 부분 — 4단계 (상태는 스크립트만 정한다)
 
 감사 범위(고정 목록, `pre` 가 절대경로로 만든다): `~/.claude/CLAUDE.md` · `~/.claude/rules/*.md`(최상위만) ·
-`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md`·`SKILL.en.md` · 현재 작업 디렉터리의 `CLAUDE.md`(있을 때).
+`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md`·`SKILL.en.md` · `reference/*.md` 8개(optimizer·rules-checker·scanner·with-md-catalog 의 ko/en, 각각 필수) ·
+현재 작업 디렉터리의 `CLAUDE.md`(있을 때).
 
 ```bash
 AR="$HOME/.claude/skills/memory-health/scripts/audit-record.sh"
@@ -221,6 +222,7 @@ bash "$AR" pre --cwd "$PWD"      # ① STATE=READY 면 RUN_DIR=<경로> 출력 �
 
 ```
 model: opus (reason: audit)
+spawn: why=p proc=memory-health:routine-audit n=1 est=<fixed>+<work>
 Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
 to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
 <MANIFEST>
