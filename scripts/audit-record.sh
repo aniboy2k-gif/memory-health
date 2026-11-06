@@ -111,7 +111,6 @@ fm_name() {
 }
 
 # ── pre ─────────────────────────────────────────────────────────────────────
-PRE_REASON=""
 pre_fail() { # $1 state, $2 reason
   local rec
   echo "STATE=$1"
@@ -416,6 +415,9 @@ cmd_post() {
     { report_header "$state" "$evidence"; cat "$report"; } > "$saved" && chmod 600 "$saved"
     # keep newest $REPORTS_KEEP
     local old
+    # newest-first by mtime is the requirement; names are self-generated (file_ts). SC2010 wiki exception:
+    # "If a specific order of files is needed, ls <sort options> | grep might be the best alternative."
+    # shellcheck disable=SC2010
     ls -1t "$REPORTS_DIR" 2>/dev/null | grep '\.md$' | tail -n +$((REPORTS_KEEP + 1)) | while IFS= read -r old; do
       rm -f "$REPORTS_DIR/$old"
     done
