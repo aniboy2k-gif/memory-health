@@ -209,7 +209,8 @@ AUDIT_DAYS=$(days_since "$AUDIT_LAST"); UPDATE_DAYS=$(days_since "$UPDATE_LAST")
 ### Audit part — four steps (only the script decides the state)
 
 Audit scope (fixed list, made into absolute paths by `pre`): `~/.claude/CLAUDE.md` · `~/.claude/rules/*.md` (top level only) ·
-`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md` and `SKILL.en.md` · the current working directory's `CLAUDE.md` (if any).
+`${CLAUDE_MEMORY_DIR}/MEMORY.md` · `~/.claude/skills/memory-health/SKILL.md` and `SKILL.en.md` · the 8 `reference/*.md` files (ko/en of optimizer, rules-checker, scanner, with-md-catalog; each required) ·
+the current working directory's `CLAUDE.md` (if any).
 
 ```bash
 AR="$HOME/.claude/skills/memory-health/scripts/audit-record.sh"
@@ -221,6 +222,7 @@ never in the background. Use this prompt as is, with `<MANIFEST>` replaced by th
 
 ```
 model: opus (reason: audit)
+spawn: why=p proc=memory-health:routine-audit n=1 est=<fixed>+<work>
 Apply the prompt-audit procedure (read ~/.claude/skills/claude-api/shared/prompt-audit.md fully first)
 to exactly these files, named by absolute path. Report + proposed diff only; do not apply anything.
 <MANIFEST>

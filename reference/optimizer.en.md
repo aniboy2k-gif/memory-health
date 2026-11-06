@@ -12,7 +12,7 @@
   Korean inflates bytes only — it does **not** bring the file closer to the cap. Never judge with `wc -c`.
 - MEMORY.md is excluded from the Scanner (`--scan`) — only the Optimizer applies to it
 
-### Steps (7 steps)
+### Steps (8 steps)
 
 **Step 1 — Diagnose**
 ```bash
@@ -44,7 +44,7 @@ No ad-hoc judgment — always apply the criteria from the rules file.
 **Step 3 — Propose (dry-run)**
 - Print expected changes per candidate
 - Print expected line count after applying changes
-- If `--fix --json` mode: output in the JSON schema above and **exit immediately** (skip steps 4–7)
+- If `--fix --json` mode: output in the JSON schema above and **exit immediately** (skip steps 4–8)
 - Wait for user confirmation
 
 **Step 4 — Approval**
