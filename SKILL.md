@@ -254,11 +254,14 @@ bash "$AR" fail "$RUN_DIR" "<에이전트 오류 내용>"   # jsonl 에 ENGINE_U
 bash "$AR" update-check     # timeout -k 10 300 python3 ~/.claude/skills/skill-advisor/scripts/update.py --json
 ```
 
-- 출력의 `SKILL: <이름> channel=<채널> status=<상태>` 줄(업데이트 가능·가져오기 실패)을 그대로 보고한다.
-- **적용은 자동이 아니다** — `update.py --apply` 는 SKILL.md 를 통째로 바꾸고 대상이 claude-forge 정본이며,
-  `/skill-advisor --update --apply` 는 CSR #1806 결정 전 금지된 `--listing-audit --apply` 를 자동 실행한다.
-  적용은 사용자 승인 후 claude-forge 작업 트리 + PR 에서 `update.py <skill> --apply` 를 직접 호출하는 별도 단계다.
-  skill-advisor 자체는 #1806 결정까지 고정(변경 없음).
+- 출력의 `SKILL: <이름> channel=<채널> status=<상태>` 줄(업데이트 가능·기준 판 미확인·가져오기 실패)을 그대로 보고한다.
+  `status=baseline-unconfirmed` = 로컬 파일이 기록된 기준 판 상태와 다르다(복원·병합 안 된 PR·새 로컬 수정) — 검토 뒤 `--set-baseline`.
+- **적용은 자동이 아니다** — 사용자 승인 뒤 별도 단계로 한다. `update.py --apply` 는 운영 트리·그 서브모듈·
+  패치 세트 스킬에 쓰기를 거부한다. 일상 경로 = claude-forge 연결 작업 트리에서
+  `update.py <정확한 스킬 이름> --apply --worktree <작업 트리>` → 커밋 + PR → 병합 → 운영 트리 `git pull --ff-only`.
+  `/skill-advisor --update --apply` 뒤 자동 `--listing-audit --apply` 는 `--scan` 과 같은 제외 규칙(utterance_patterns·Hard Gate·`hook_no_opt`)으로 후보를 고른다.
+  기준 판이 있는 목록 스킬을 `resync-skill.sh` 로 채택했으면 병합 뒤 `update.py --set-baseline <스킬> --hash <upstream_norm_hash>` — resync 는 그 기준 판을 고치지 않는다.
+  판정표·거부 규칙 = skill-advisor `references/update-baseline.md`.
 
 ### 상태 표 (`~/.claude/da-tools/claude-md-audit.jsonl`, 필드 `part`)
 
@@ -338,7 +341,7 @@ $RI status --check-refs --run <RUN_ID>   # 처분이 끝날 때까지 반복
 | claude-forge·memory-health·skill-advisor 수정 | 저장소마다 작업 트리 1개·PR 1개, 병합 승인은 실행 끝에 한 번 |
 | 개인 로컬 파일 수정 | 백업 후 직접 수정 |
 | 소유자만 정할 것(돈·권한·자격증명·비가역·취향) · doctor 권한 규칙 경고 | 이번 달 후속 CSR 에 `task`, 그 글에 `waiting` 태그 |
-| 스킬 업데이트 가능 | 그 스킬의 SKILL.md 가 claude-forge `vendor-patches/*-upstream-files.txt` 에 있으면(목록 스킬): `update.py --apply` 를 쓰지 않는다. 운영 HEAD 에서 새로 만든 claude-forge linked worktree 에서 `bash vendor-patches/resync-skill.sh <skill> --expect-upstream-hash <항목의 upstream= 값>` 을 돌리고 종료 코드대로 처분한다 — 목록 스킬에는 `dismissed` 를 쓰지 않는다: UNCHANGED(0) → `verified --reason "resync UNCHANGED upstream <sha256:…> exit 0 (bash vendor-patches/resync-skill.sh <skill> --expect-upstream-hash <sha256:…>)"`(P-B 가 계속 보고하는 한 매번 다시 열려 그때의 기준으로 다시 판정된다) · UPSTREAM-CHANGED(10) → vendor-patches/README 대로 마무리(그 파일을 담은 세트 전부 재생성)·PR, 병합 후 `fixed --ref <PR URL>`, 병합 전 `task --ref "CSR #N"`(그 글에 항목 id) · CONFLICT(2) → 해결·세트 전부 재생성·PR, 병합 전 `task --ref "CSR #N"`(그 글에 충돌과 항목 id), 병합 후 `fixed --ref <PR URL>` · REFUSED(4) → 이름 붙은 전제를 고쳐 같은 세션에 다시 실행, 지금 못 고치면(`upstream moved`·`fetch failed`·`baseline lags`) `task --ref "CSR #N"`(그 글에 항목 id 와 거부 문구) — update.py 금지, `verified` 금지 · NOT-PATCHED(3) → 목록 밖 스킬로 처리. 목록 밖 스킬: `update.py <정확한 스킬 이름> --apply`(이름 없는 일괄 적용 금지) + PR, 그다음 같은 세션에 `bash vendor-patches/resync-skill.sh --verify-all`, 또는 `dismissed`(일부러 갈라 둔 로컬 수정 — 목록 밖 스킬만) |
+| 스킬 업데이트 가능 | 그 스킬의 SKILL.md 가 claude-forge `vendor-patches/*-upstream-files.txt` 에 있으면(목록 스킬): `update.py --apply` 를 쓰지 않는다. 운영 HEAD 에서 새로 만든 claude-forge linked worktree 에서 `bash vendor-patches/resync-skill.sh <skill> --expect-upstream-hash <항목의 upstream= 값>` 을 돌리고 종료 코드대로 처분한다 — 목록 스킬에는 `dismissed` 를 쓰지 않는다: UNCHANGED(0) → `verified --reason "resync UNCHANGED upstream <sha256:…> exit 0 (bash vendor-patches/resync-skill.sh <skill> --expect-upstream-hash <sha256:…>)"`(P-B 가 계속 보고하는 한 매번 다시 열려 그때의 기준으로 다시 판정된다) · UPSTREAM-CHANGED(10) → vendor-patches/README 대로 마무리(그 파일을 담은 세트 전부 재생성)·PR, 병합 후 `fixed --ref <PR URL>`, 병합 전 `task --ref "CSR #N"`(그 글에 항목 id) · CONFLICT(2) → 해결·세트 전부 재생성·PR, 병합 전 `task --ref "CSR #N"`(그 글에 충돌과 항목 id), 병합 후 `fixed --ref <PR URL>` · REFUSED(4) → 이름 붙은 전제를 고쳐 같은 세션에 다시 실행, 지금 못 고치면(`upstream moved`·`fetch failed`·`baseline lags`) `task --ref "CSR #N"`(그 글에 항목 id 와 거부 문구) — update.py 금지, `verified` 금지 · NOT-PATCHED(3) → 목록 밖 스킬로 처리. 목록 밖 스킬: `update.py <정확한 스킬 이름> --apply --worktree <claude-forge 연결 작업 트리>`(이름 없는 일괄 적용 금지) + PR, 그다음 같은 세션에 `bash vendor-patches/resync-skill.sh --verify-all`, 또는 `dismissed`(일부러 갈라 둔 로컬 수정 — 목록 밖 스킬만) |
 | 의존성 취약점(`dep-vulnerable`, `npm audit` 가 낸 것) | critical(sev=high)은 `fixed`(의존성 올림 + 시험)·`task`. high·moderate 는 올림 가능이면 올리고, 아니면 입력 경로(외부 입력이 닿는가)를 근거로 한 `dismissed`. 새 권고가 생기면 id 가 달라져 다시 열린다 |
 | 플러그인 판 바뀜 | `claude plugin list --json` 에서 오류 없이 켜져 있는지 보고 `verified` |
 | 자동 갱신 마켓 14일 넘게 안 갱신 | `claude plugin marketplace update <이름>` 후 다시 확인·기록 |

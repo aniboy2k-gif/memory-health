@@ -351,6 +351,14 @@ tail -1 "$MH_AUDIT_JSONL" | jq -e '.fetch_error==4 and (.failed|length)==.fetch_
   && ok "failed list = the 4 statuses update.py counts as fetch_error (length == fetch_error)" || no "failed vs fetch_error: $(tail -1 "$MH_AUDIT_JSONL")"
 [ "$(jq -c '.failed' "$UF" 2>/dev/null)" = '["k00","k01","k02","k03"]' ] && ok "skill-update-failed.json lists all 4" || no "failed.json: $(cat "$UF" 2>/dev/null)"
 tail -1 "$MH_AUDIT_JSONL" | jq -e '.local_custom==1' >/dev/null && ok "update record has local_custom from summary" || no "local_custom: $(tail -1 "$MH_AUDIT_JSONL")"
+
+# CSR #2415: skill-advisor baseline-unconfirmed (local file diverged from the recorded baseline) is reported like update-available
+printf '%s\n' 'import json' \
+  'res = [{"skill": "bu", "status": "baseline-unconfirmed", "upstream_type": "github_raw", "upstream_hash": "sha256:ab"}, {"skill": "ok", "status": "up-to-date"}]' \
+  'print(json.dumps({"results": res, "summary": {"total": 2, "up_to_date": 1, "update_available": 1, "fetch_error": 0}}))' > "$T/stub6.py"
+OUT="$(MH_UPDATE_CMD="python3 '$T/stub6.py'" bash "$SCRIPT" update-check 2>&1)"
+printf '%s\n' "$OUT" | grep -qx 'SKILL: bu channel=github_raw status=baseline-unconfirmed upstream=sha256:ab' \
+  && ok "baseline-unconfirmed row is listed in the report" || no "baseline-unconfirmed not listed [$OUT]"
 printf '%s\n' 'import json' 'print(json.dumps({"results": [], "summary": {"total": 3, "up_to_date": 3, "fetch_error": 0}}))' > "$T/stub5.py"
 MH_UPDATE_CMD="python3 '$T/stub5.py'" bash "$SCRIPT" update-check >/dev/null 2>&1
 tail -1 "$MH_AUDIT_JSONL" | jq -e '.local_custom==0' >/dev/null && ok "local_custom absent from summary -> 0" || no "local_custom default: $(tail -1 "$MH_AUDIT_JSONL")"

@@ -538,7 +538,7 @@ cmd_update() {
       atomic_write "$UPDATE_FAILED" "$(jq -nc --arg ts "$(iso_ts)" --argjson f "$failed" '{ts:$ts, failed:$f}')"
     fi
     # the list memory-health reports: updates available and per-skill fetch errors
-    jq -r '.results[]? | select((.status // "") | test("update-available|fetch-error|local-missing|config-error|no-url"))
+    jq -r '.results[]? | select((.status // "") | test("update-available|baseline-unconfirmed|fetch-error|local-missing|config-error|no-url"))
            | "SKILL: \(.skill // .name // "?") channel=\(.upstream_type // "?") status=\(.status // "?") upstream=\(.upstream_hash // .latest_version // .latest // "-" | tostring | gsub("\\s"; "_"))"' "$out" 2>/dev/null
   fi
   rm -f "$out" "$err"
