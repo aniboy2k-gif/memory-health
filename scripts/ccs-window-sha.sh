@@ -23,13 +23,14 @@
 # 사용: zsh ccs-window-sha.sh {composition|metric|both}
 # 종료: 0 성공 · 3 측정 불가(빈 열거 · 게이트 부재 · 게이트 토크나이저 앵커 부재 ·
 #       모듈 판독 불가 · `CCS_TOKENIZER` 불일치 · **모듈 해싱 실패/부적격**(`tokenizer_hash_failed`) ·
-#       **지문 해싱 실패/부적격**(`metric_hash_failed`)) — 조용히 빈 값을 내지 않는다
+#       **지문 해싱 실패/부적격**(`metric_hash_failed`) · **구성 지문 해싱 실패/부적격**
+#       (`composition_hash_failed`, CSR #2297)) — 조용히 빈 값을 내지 않는다
 #   ★ 뒤 둘은 CSR #2288 에서 추가됐다. 그 전까지 `_metric` 의 두 다이제스트 지점은 실패를
 #     전파하지 않았다(파이프라인 rc 는 최우측 명령의 것 — zsh PIPE_FAIL 기본 off).
-#   ★ 범위 경고 — 이 열거는 `_metric` 에 대해서만 완전하다. `_composition()` 의 `shasum` 실패는
-#     **여전히 rc 를 전파하지 않아** 이 목록에 없다(CSR #2288 범위 밖).
-#     이 주석을 "스크립트 전체의 rc 3 전건"으로 읽지 말 것 — 그렇게 읽으면 이 주석 자신이
-#     이 티켓이 고치는 부류의 거짓 문장이 된다.
+#   ★ CSR #2297 — `_composition()` 도 같은 검증(rc 포착 · 한 줄 · 64-hex)을 거쳐 실패하면 rc 3 과
+#     `CCS_COMPOSITION_UNAVAILABLE reason=composition_hash_failed` 를 낸다(접두어를 metric 것과 달리 둔
+#     이유: metric 사유를 읽는 소비자 정규식에 걸리지 않게). 이 파일의 두 지문이 모두 검증하며,
+#     같은 조리법의 사본인 `ccs-floor-enumerate.sh` 의 composition_sha 도 같은 검증을 한다.
 #   ★ 위 `사용:`·`종료:` 두 줄은 `count` 서브커맨드와 rc 2(미지원 인자)를 빠뜨린다 — **기존 결함이며
 #     이 티켓 범위 밖**이다. 완전하다고 읽지 말 것. (고치지 않고 이름만 댄다: 이 변경과 무관하다.)
 #   ★ 이 파일의 주석에는 **줄번호를 쓰지 않는다**. 줄번호는 다음 편집 한 번에 조용히 거짓이 되고,
@@ -67,7 +68,25 @@ _composition() {
     return 3
   fi
   # 정렬 후 개행 결합. 개수는 지문에 넣지 않는다(count-free).
-  print -rl -- ${(o)paths} | shasum -a 256 | cut -d' ' -f1
+  # ★ CSR #2297 — `_metric`(CSR #2288)과 같은 형태로 실패를 전파한다. 옛 `| shasum | cut` 은 최우측이
+  #   `cut` 이라 shasum 이 죽어도 rc=0 이었고, 유효 64-hex 를 찍고 죽으면 그 가짜 지문이 그대로 나갔다.
+  #   입력 바이트열 `print -rl -- ${(o)paths}` 는 그대로다 — 바뀌면 composition_sha 가 회전한다.
+  local _sha_out _out _rc
+  _sha_out="$( set -o pipefail; print -rl -- ${(o)paths} | shasum -a 256 )"; _rc=$?
+  if [ "$_rc" -ne 0 ]; then
+    echo "CCS_COMPOSITION_UNAVAILABLE reason=composition_hash_failed rc=$_rc" >&2
+    return 3
+  fi
+  case "$_sha_out" in *$'\n'*)      # 두 줄 이상 = 잘못된 다이제스트 출력 — 다듬지 않고 거부한다
+    echo "CCS_COMPOSITION_UNAVAILABLE reason=composition_hash_failed" >&2
+    return 3 ;;
+  esac
+  _out="${_sha_out%% *}"            # 한 줄 출력에서 `cut -d' ' -f1` 과 같은 바이트
+  if ! _is_sha256 "$_out"; then
+    echo "CCS_COMPOSITION_UNAVAILABLE reason=composition_hash_failed" >&2
+    return 3
+  fi
+  print -r -- "$_out"
 }
 
 # ★ `case` 형태를 의도적으로 쓴다 — zsh 글롭 `[[ $1 == [0-9a-f](#c64) ]]` 는
@@ -102,7 +121,11 @@ _metric() {
     echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_hash_failed path=$_TOKENIZER_DERIVED rc=$_rc" >&2
     return 3
   fi
-  _mod_sha="${_sha_out%% *}"          # `cut -d' ' -f1` 과 동일 바이트
+  case "$_sha_out" in *$'\n'*)        # CSR #2297 — 두 줄 이상이면 첫 해시로 다듬지 않고 거부
+    echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_hash_failed path=$_TOKENIZER_DERIVED" >&2
+    return 3 ;;
+  esac
+  _mod_sha="${_sha_out%% *}"          # 한 줄 출력에서 `cut -d' ' -f1` 과 동일 바이트
   if ! _is_sha256 "$_mod_sha"; then   # ★ "hash validation" 절반 — rc 포착으로는 못 잡는다
     echo "CCS_METRIC_UNAVAILABLE reason=tokenizer_hash_failed path=$_TOKENIZER_DERIVED" >&2
     return 3
@@ -122,6 +145,10 @@ _metric() {
     echo "CCS_METRIC_UNAVAILABLE reason=metric_hash_failed rc=$_rc" >&2
     return 3
   fi
+  case "$_sha_out" in *$'\n'*)        # CSR #2297 — 두 줄 이상이면 다듬지 않고 거부
+    echo "CCS_METRIC_UNAVAILABLE reason=metric_hash_failed" >&2
+    return 3 ;;
+  esac
   _out="${_sha_out%% *}"
   if ! _is_sha256 "$_out"; then
     echo "CCS_METRIC_UNAVAILABLE reason=metric_hash_failed" >&2

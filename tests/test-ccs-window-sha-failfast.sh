@@ -99,6 +99,11 @@ case "\$MODE" in
   file_bad_rc0)    if [ \$# -ge 3 ]; then echo "NOTAHASH  \$3"; exit 0; fi; exec "\$REAL" "\$@" ;;
   stdin_fail)      if [ \$# -ge 3 ]; then exec "\$REAL" "\$@"; fi; exit 11 ;;
   stdin_bad_rc0)   if [ \$# -ge 3 ]; then exec "\$REAL" "\$@"; fi; cat >/dev/null; echo "ZZZZ  -"; exit 0 ;;
+  # CSR #2297 — 아래 셋은 \`_composition\`(stdin 형 1회)과 \`_metric\` 두 지점을 가르는 모드다.
+  stdin_hex_rc9)       if [ \$# -ge 3 ]; then exec "\$REAL" "\$@"; fi; cat >/dev/null; echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  -"; exit 9 ;;
+  # 둘째 줄은 비어 있으면 안 된다 — \$( ) 가 끝 개행을 지워 한 줄이 되면 단언이 공허해진다.
+  stdin_hex_extra_rc0) if [ \$# -ge 3 ]; then exec "\$REAL" "\$@"; fi; cat >/dev/null; echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  -"; echo "junk"; exit 0 ;;
+  file_hex_extra_rc0)  if [ \$# -ge 3 ]; then echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  \$3"; echo "junk"; exit 0; fi; exec "\$REAL" "\$@" ;;
 esac
 exec "\$REAL" "\$@"
 STUBEOF
@@ -212,13 +217,77 @@ for pair in "tokenizer_hash_failed:path=/x rc=7" "metric_hash_failed:rc=11"; do
 done
 
 echo
-echo "── C7: 범위 밖 불변 — _composition() 은 건드리지 않았다 ──"
-COUT="$(CCS_GATE="$GATE" zsh "$SHA_SH" composition 2>/dev/null)"; CRC=$?
-[ "$CRC" -eq 0 ] && [ ${#COUT} -eq 64 ] && ok "C7 composition rc=0 · 64-hex (불변)" \
-  || bad "C7 composition rc=$CRC len=${#COUT}"
-# ★ 정직: `_composition()` 은 **같은 모양의 결함을 그대로 갖는다**(파이프 rc 미포착).
-#   이 티켓의 범위가 아니라서 고치지 않았고, 여기서도 그 결함을 단언하지 않는다.
-#   범위 논거는 CSR #2288 본문 "범위 밖" 절에 있다 — 무해 증명이 아니다.
+echo "── C7: _composition() 도 실패를 전파한다 (CSR #2297 — 아래 B0·P1·N6~N9 가 단언한다) ──"
+# 이 절의 옛 주석("_composition 은 같은 결함을 그대로 갖는다 · 범위 밖")은 CSR #2297 로 거짓이 되어 지웠다.
+run_comp() {  # $1=PATH prefix(빈문자면 무스텁) $2=게이트(기본 $GATE) → $OUT · $RC · $ERRF
+  ERRF="$W/err.$$"
+  if [ -n "${1:-}" ]; then
+    OUT="$(PATH="$1:$PATH" CCS_GATE="${2:-$GATE}" zsh "$SHA_SH" composition 2>"$ERRF")"; RC=$?
+  else
+    OUT="$(CCS_GATE="${2:-$GATE}" zsh "$SHA_SH" composition 2>"$ERRF")"; RC=$?
+  fi
+}
+comp_reason_of() { sed -n 's/^CCS_COMPOSITION_UNAVAILABLE reason=\([a-z_][a-z_]*\).*/\1/p' "$ERRF" | head -1; }
+
+echo
+echo "── B0: composition 은 shasum 을 정확히 1회, stdin 형(\$#==2)으로 부른다 (스텁 판별 가정 단언) ──"
+: > "$TRACE"; run_comp "$W/s0"
+n_calls=$(wc -l < "$TRACE" | tr -d ' '); n_stdin=$(awk '$1==2' "$TRACE" | wc -l | tr -d ' ')
+[ "$n_calls" -eq 1 ] && [ "$n_stdin" -eq 1 ] && ok "B0 composition shasum 1회 · stdin 형" \
+  || bad "B0 호출 ${n_calls}회 · stdin형 ${n_stdin}회 (기대 1·1) — 스텁 판별식을 다시 유도할 것"
+
+echo
+echo "── P1·P1b: 사양 고정값 (피검체가 아니라 사양에서 나온 리터럴) ──"
+# 기대값 유도: printf '/fixture/alpha.md\n/fixture/beta.md\n' | shasum -a 256  (35바이트)
+EXPECTED_FIXTURE_COMP="ffe30a84f5aee402f6ae8cd6bd11a75159897937aad808b6ccd42c9dcd8ba246"
+run_comp ""
+[ "$RC" -eq 0 ] && [ "$OUT" = "$EXPECTED_FIXTURE_COMP" ] && ok "P1 composition = 사양 리터럴 (바이트 동일)" \
+  || bad "P1 rc=$RC out='$OUT' (기대 rc=0 · $EXPECTED_FIXTURE_COMP)"
+# P1b — 두 번째 픽스처(경로 1개). 첫 리터럴을 상수로 내는 변이는 여기서 빨개진다.
+# 기대값 유도: printf '/fixture/alpha.md\n' | shasum -a 256
+mkdir -p "$W/gate1/lib"; GATE1="$W/gate1/check-context-size.sh"
+sed 's#printf .%s\\0%s\\0. "/fixture/alpha.md" "/fixture/beta.md"#printf "%s\\0" "/fixture/alpha.md"#' "$GATE" > "$GATE1"
+cp "$W/gate/lib/ccs-tokenize.py" "$W/gate1/lib/"; chmod +x "$GATE1"
+grep -q 'beta' "$GATE1" && bad "P1b 픽스처 생성 실패 — sed 치환이 먹지 않았다" || ok "P1b 픽스처 생성(경로 1개)"
+EXPECTED_FIXTURE_COMP_1="47ab03d4193a2c0e3c0b89bfacb6d8e60b0d883cfcd363ee79a16b98063cdc14"
+run_comp "" "$GATE1"
+[ "$RC" -eq 0 ] && [ "$OUT" = "$EXPECTED_FIXTURE_COMP_1" ] && ok "P1b composition = 두 번째 사양 리터럴" \
+  || bad "P1b rc=$RC out='$OUT' (기대 rc=0 · $EXPECTED_FIXTURE_COMP_1)"
+
+echo
+echo "── N6~N9: composition 다이제스트 실패 → rc=3 · stdout 0바이트 · reason=composition_hash_failed ──"
+for pair in "s6:all_fail:N6 전면 실패" "s7:stdin_hex_rc9:N7 유효 64-hex 후 rc=9" \
+            "s8:stdin_bad_rc0:N8 rc=0 인데 부적격 해시" "s9:stdin_hex_extra_rc0:N9 64-hex 다음 줄 junk · rc=0"; do
+  d="${pair%%:*}"; rest="${pair#*:}"; mode="${rest%%:*}"; label="${rest#*:}"
+  mk_stub "$W/$d" "$mode"; run_comp "$W/$d"
+  [ "$RC" -eq 3 ] && ok "$label → rc=3" || bad "$label → rc=$RC (기대 3)"
+  [ ${#OUT} -eq 0 ] && ok "$label → stdout 0바이트" || bad "$label → stdout='$OUT' ← 가짜 지문이 나갔다"
+  r="$(comp_reason_of)"; [ "$r" = "composition_hash_failed" ] && ok "$label → reason=composition_hash_failed" \
+    || bad "$label → reason='$r'"
+done
+
+echo
+echo "── N9m·N9f: _metric 두 지점의 '한 줄' 검사를 각각 단언한다 ──"
+# N9m: 파일형은 실 shasum, stdin 형만 두 줄 → 최종 지문 지점
+mk_stub "$W/s9m" stdin_hex_extra_rc0; run_metric "$W/s9m"
+[ "$RC" -eq 3 ] && [ ${#OUT} -eq 0 ] && ok "N9m metric 최종 지점 두 줄 → rc=3 · 무출력" || bad "N9m rc=$RC out='$OUT'"
+r="$(reason_of)"; [ "$r" = "metric_hash_failed" ] && ok "N9m reason=metric_hash_failed" || bad "N9m reason='$r'"
+# N9f: 파일형만 두 줄 → 모듈 다이제스트 지점
+mk_stub "$W/s9f" file_hex_extra_rc0; run_metric "$W/s9f"
+[ "$RC" -eq 3 ] && [ ${#OUT} -eq 0 ] && ok "N9f metric 모듈 지점 두 줄 → rc=3 · 무출력" || bad "N9f rc=$RC out='$OUT'"
+r="$(reason_of)"; [ "$r" = "tokenizer_hash_failed" ] && ok "N9f reason=tokenizer_hash_failed" || bad "N9f reason='$r'"
+
+echo
+echo "── S1: 서브커맨드 회귀 (픽스처) ──"
+for sc in composition metric both count; do
+  CCS_GATE="$GATE" zsh "$SHA_SH" "$sc" > "$W/s1.out" 2>&1; src=$?
+  [ "$src" -eq 0 ] && ok "S1 $sc rc=0" || bad "S1 $sc rc=$src"
+done
+CCS_GATE="$GATE" zsh "$SHA_SH" bogus > "$W/s1.out" 2>&1; src=$?
+[ "$src" -eq 2 ] && ok "S1 미지원 인자 rc=2" || bad "S1 미지원 인자 rc=$src (기대 2)"
+PATH="$W/s6:$PATH" CCS_GATE="$GATE" zsh "$SHA_SH" both > "$W/s1.out" 2>/dev/null; src=$?
+[ "$src" -eq 3 ] && ! grep -q '^composition_sha=' "$W/s1.out" && ok "S1 both · shasum 전면 실패 → rc=3 · composition_sha 줄 없음" \
+  || bad "S1 both rc=$src · $(cat "$W/s1.out")"
 
 echo
 echo "── 격리 ──"

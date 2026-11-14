@@ -493,6 +493,66 @@ S_CSHA="$(zsh "$SCRIPTS/ccs-window-sha.sh" composition 2>/dev/null)"
   || bad "★지문 불일치: 열거자=$E_CSHA sha스크립트=$S_CSHA"
 
 echo
+echo "══ 열거자 지문 fail-fast (CSR #2297 · 두 번째 생산자) ══"
+# 열거자는 핀에 실제로 쓰이는 composition_sha 를 만든다. 옛 `| shasum | cut` + `[ -n ]` 은
+# shasum 이 유효 64-hex 를 찍고 죽거나 비-16진을 내도 통과시켰다.
+REAL_SHASUM_E="$(command -v shasum)"
+mkdir -p "$W/egate"; EGATE="$W/egate/check-context-size.sh"; EGATE1="$W/egate1/check-context-size.sh"
+cat > "$EGATE" <<'EGEOF'
+#!/bin/zsh
+if [ "${1:-}" = "--print-floor-realpaths" ]; then printf '%s\0%s\0' "/fixture/alpha.md" "/fixture/beta.md"; exit 0; fi
+echo "hard_tokens=100"
+exit 0
+EGEOF
+mkdir -p "$W/egate1"; sed 's#printf .%s\\0%s\\0. "/fixture/alpha.md" "/fixture/beta.md"#printf "%s\\0" "/fixture/alpha.md"#' "$EGATE" > "$EGATE1"
+chmod +x "$EGATE" "$EGATE1"
+mk_enum_stub() { # $1=dir $2=mode — stdin 형($#==2)만 오작동, 파일형은 실 shasum
+  mkdir -p "$1"
+  cat > "$1/shasum" <<STUBEOF
+#!/bin/sh
+REAL="$REAL_SHASUM_E"
+if [ \$# -ge 3 ]; then exec "\$REAL" "\$@"; fi
+case "$2" in
+  trace)               echo "\$#" >> "$W/enum-trace"; exec "\$REAL" "\$@" ;;
+  all_fail)            exit 7 ;;
+  stdin_hex_rc9)       cat >/dev/null; echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  -"; exit 9 ;;
+  stdin_bad_rc0)       cat >/dev/null; echo "ZZZZ  -"; exit 0 ;;
+  stdin_hex_extra_rc0) cat >/dev/null; echo "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  -"; echo "junk"; exit 0 ;;
+esac
+exec "\$REAL" "\$@"
+STUBEOF
+  chmod +x "$1/shasum"
+}
+run_enum() { # $1=PATH prefix(빈문자면 무스텁) $2=게이트 → EOUT · ERC · $W/enum.err
+  if [ -n "${1:-}" ]; then
+    EOUT="$(PATH="$1:$PATH" CCS_GATE="${2:-$EGATE}" CCS_LEDGER_FILE="$W/throwaway-e.jsonl" zsh "$ENUMER" 2>"$W/enum.err")"; ERC=$?
+  else
+    EOUT="$(CCS_GATE="${2:-$EGATE}" CCS_LEDGER_FILE="$W/throwaway-e.jsonl" zsh "$ENUMER" 2>"$W/enum.err")"; ERC=$?
+  fi
+}
+n_sentinel() { printf '%s\n' "$EOUT" | /usr/bin/grep -c '^CCS_FLOOR_JSON' | tr -d ' '; }
+e_csha() { printf '%s\n' "$EOUT" | tail -1 | sed 's/^CCS_FLOOR_JSON //' | python3 -c 'import json,sys;print(json.load(sys.stdin)["composition_sha"])' 2>/dev/null; }
+# E-B0 — 스텁 판별 가정(열거자는 shasum 을 정확히 1회 stdin 형으로 부른다)
+: > "$W/enum-trace"; mk_enum_stub "$W/es0" trace; run_enum "$W/es0"
+nc=$(wc -l < "$W/enum-trace" | tr -d ' '); ns=$(awk '$1==2' "$W/enum-trace" | wc -l | tr -d ' ')
+[ "$nc" -eq 1 ] && [ "$ns" -eq 1 ] && ok "E-B0 열거자 shasum 1회 · stdin 형" || bad "E-B0 호출 ${nc}회 · stdin형 ${ns}회 (기대 1·1)"
+# E0·E0b — 사양 리터럴 (failfast P1·P1b 와 같은 값; 유도: printf '/fixture/alpha.md\n/fixture/beta.md\n' | shasum -a 256)
+run_enum ""
+[ "$ERC" -eq 0 ] && [ "$(e_csha)" = "ffe30a84f5aee402f6ae8cd6bd11a75159897937aad808b6ccd42c9dcd8ba246" ] \
+  && ok "E0 열거자 composition_sha = 사양 리터럴" || bad "E0 rc=$ERC csha=$(e_csha)"
+run_enum "" "$EGATE1"
+[ "$ERC" -eq 0 ] && [ "$(e_csha)" = "47ab03d4193a2c0e3c0b89bfacb6d8e60b0d883cfcd363ee79a16b98063cdc14" ] \
+  && ok "E0b 두 번째 리터럴(경로 1개)" || bad "E0b rc=$ERC csha=$(e_csha)"
+for pair in "es1:stdin_hex_rc9:E1 유효 64-hex 후 rc=9" "es2:stdin_bad_rc0:E2 rc=0 인데 비-16진" \
+            "es3:stdin_hex_extra_rc0:E3 64-hex 다음 줄 junk" "es4:all_fail:E4 전면 실패(회귀 전용 — 패치 전에도 초록)"; do
+  d="${pair%%:*}"; rest="${pair#*:}"; mode="${rest%%:*}"; label="${rest#*:}"
+  mk_enum_stub "$W/$d" "$mode"; run_enum "$W/$d"
+  [ "$ERC" -eq 3 ] && [ "$(n_sentinel)" = "0" ] && ok "$label → rc=3 · 센티넬 0줄" \
+    || bad "$label → rc=$ERC · 센티넬 $(n_sentinel)줄 · csha=$(e_csha)"
+done
+/usr/bin/grep -q '지문 계산 실패' "$W/enum.err" && ok "E4 stderr 에 '지문 계산 실패'" || bad "E4 stderr: $(head -c 200 "$W/enum.err")"
+
+echo
 echo "══ 격리 ══"
 REAL_SHA_AFTER="$(shasum -a 256 "$REAL_LEDGER" 2>/dev/null | cut -d' ' -f1)"
 REAL_PIN_SHA_AFTER="$(shasum -a 256 "$HOME/.claude/gate-artifacts/ccs-window.start" 2>/dev/null | cut -d' ' -f1)"
