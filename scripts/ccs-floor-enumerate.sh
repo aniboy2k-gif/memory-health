@@ -18,7 +18,8 @@
 #   (shipped 선례: ccs-window-sha.sh:24-28 이 같은 이유로 bash 를 거부한다.)
 #
 # ★ `composition_sha` 의 정의는 **한 곳**이어야 한다
-#   여기 계산식은 `ccs-window-sha.sh:33-43` 과 같은 조리법이다(정렬 · 개행 결합 · count-free).
+#   여기 계산식은 `ccs-window-sha.sh` 의 `_composition()` 과 같은 조리법이다(정렬 · 개행 결합 · count-free)
+#   — 같은 검증(rc · 한 줄 · 64-hex)도 함께다(CSR #2297). 줄번호로 가리키지 않는다(편집 한 번에 낡는다).
 #   같다는 것을 약속으로 두지 않고 **probe 로 단언**한다 — tests/test-ccs-window-close.sh 의
 #   `composition_sha 동치` 케이스가 두 산출을 대조한다. 어긋나면 빨갛다.
 #
@@ -71,9 +72,21 @@ esac
 [ "$floor" -gt 0 ] || { echo "ERROR: floor 가 양의 정수가 아닙니다: $floor" >&2; exit 3 }
 
 # ── ⑷ composition_sha — 정렬·개행결합·count-free (ccs-window-sha.sh 와 같은 조리법) ──
-typeset csha
-csha="$(print -rl -- $paths | shasum -a 256 | cut -d' ' -f1)"
-[ -n "$csha" ] || { echo "ERROR: 지문 계산 실패" >&2; exit 3 }
+# ★ CSR #2297 — `ccs-window-sha.sh` 의 `_composition()` 과 같은 검증(rc 포착 · 한 줄 · 64-hex).
+#   옛 `| shasum | cut` + `[ -n ]` 은 최우측이 `cut` 이라 shasum 이 유효 64-hex 를 찍고 죽거나
+#   비-16진을 내도 통과시켰고, 그 값이 핀에 기록됐다. 입력 바이트열 `print -rl -- $paths` 는 그대로다.
+typeset csha _sha_out
+integer _rc
+_sha_out="$( set -o pipefail; print -rl -- $paths | shasum -a 256 )"; _rc=$?
+if [ "$_rc" -ne 0 ]; then
+  echo "ERROR: 지문 계산 실패 rc=$_rc" >&2; exit 3
+fi
+case "$_sha_out" in *$'\n'*)   # 두 줄 이상 = 잘못된 다이제스트 출력 — 다듬지 않고 거부
+  echo "ERROR: 지문 계산 실패 (다이제스트 출력이 한 줄이 아님)" >&2; exit 3 ;;
+esac
+csha="${_sha_out%% *}"         # 한 줄 출력에서 `cut -d' ' -f1` 과 같은 바이트
+case "$csha" in (*[!0-9a-f]*|'') echo "ERROR: 지문 계산 실패 (64-hex 아님)" >&2; exit 3 ;; esac
+[ ${#csha} -eq 64 ] || { echo "ERROR: 지문 계산 실패 (64-hex 아님)" >&2; exit 3 }
 
 # ── ⑸ 센티넬 — **마지막 줄** ───────────────────────────────────────────────
 FLOOR="$floor" FC="${#paths}" UNREAD="$unreadable" CSHA="$csha" \
